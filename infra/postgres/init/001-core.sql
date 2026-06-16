@@ -18,3 +18,5 @@ CREATE TABLE IF NOT EXISTS core.tenants (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS tenants_status_idx ON core.tenants (status);

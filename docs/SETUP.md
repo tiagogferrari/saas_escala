@@ -47,7 +47,15 @@ Servicos:
 - Mailpit SMTP: `localhost:1025`
 - Mailpit UI: `http://localhost:8025`
 
-## 5. Rodar aplicacoes
+## 5. Rodar migrations
+
+```powershell
+pnpm db:migrate
+```
+
+Esse comando cria ou atualiza o schema global `core`. Os schemas de cada espaco sao criados quando um novo espaco e cadastrado.
+
+## 6. Rodar aplicacoes
 
 ```powershell
 pnpm dev
@@ -59,7 +67,31 @@ Endpoints planejados:
 - API: `http://localhost:3333`
 - Healthcheck: `http://localhost:3333/health`
 
-## 6. Reset local
+## 7. Criar o primeiro espaco
+
+Com a API rodando:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:3333/tenants `
+  -ContentType "application/json" `
+  -Body '{"slug":"piloto-marcelo","displayName":"Piloto Marcelo"}'
+```
+
+Listar espacos:
+
+```powershell
+Invoke-RestMethod http://localhost:3333/tenants
+```
+
+Verificar banco:
+
+```powershell
+Invoke-RestMethod http://localhost:3333/health/db
+```
+
+## 8. Reset local
 
 Apaga volumes de banco e Redis:
 

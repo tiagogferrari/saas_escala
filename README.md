@@ -35,6 +35,7 @@ cd C:\Users\tiago\Documents\Codex\saas_escala
 Copy-Item .env.example .env
 pnpm install
 docker compose up -d
+pnpm db:migrate
 pnpm dev
 ```
 
