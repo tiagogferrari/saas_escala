@@ -38,6 +38,18 @@ type ScheduleFunction = {
   createdAt: string;
 };
 
+type ScheduleAssignment = {
+  id: string;
+  scheduleSlotId: string;
+  assigneeType: "person" | "group";
+  assigneeId: string;
+  assigneeName: string;
+  status: string;
+  confirmedAt: string | null;
+  confirmationSource: string | null;
+  createdAt: string;
+};
+
 type ScheduleDraft = {
   id: string;
   title: string;
@@ -58,6 +70,7 @@ type ScheduleDraft = {
       name: string;
     };
   };
+  assignments: ScheduleAssignment[];
   createdAt: string;
 };
 
@@ -121,6 +134,34 @@ function scheduleStatusLabel(status: string) {
   return status;
 }
 
+function assignmentStatusLabel(status: string) {
+  if (status === "externally_confirmed") {
+    return "Confirmado pelo gestor";
+  }
+
+  if (status === "confirmed") {
+    return "Confirmado";
+  }
+
+  if (status === "invited") {
+    return "Convidado";
+  }
+
+  if (status === "pending") {
+    return "Aguardando";
+  }
+
+  if (status === "declined") {
+    return "Recusado";
+  }
+
+  if (status === "cancelled") {
+    return "Cancelado";
+  }
+
+  return status;
+}
+
 export default function HomePage() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [dbStatus, setDbStatus] = useState<ApiStatus>("checking");
@@ -152,11 +193,17 @@ export default function HomePage() {
     () => getDefaultScheduleWindow().endsAt,
   );
   const [scheduleRequiredCount, setScheduleRequiredCount] = useState(1);
+  const [assignmentScheduleId, setAssignmentScheduleId] = useState("");
+  const [assignmentPersonId, setAssignmentPersonId] = useState("");
+  const [assignmentStatus, setAssignmentStatus] = useState<
+    "externally_confirmed" | "invited"
+  >("externally_confirmed");
 
   const [isSubmittingTenant, setIsSubmittingTenant] = useState(false);
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
   const [isSubmittingLocation, setIsSubmittingLocation] = useState(false);
   const [isSubmittingSchedule, setIsSubmittingSchedule] = useState(false);
+  const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
 
@@ -283,6 +330,24 @@ export default function HomePage() {
       setScheduleFunctionId(scheduleFunctions[0]?.id ?? "");
     }
   }, [scheduleFunctions, scheduleFunctionId]);
+
+  useEffect(() => {
+    const hasSelectedSchedule = schedules.some(
+      (schedule) => schedule.id === assignmentScheduleId,
+    );
+    if (!hasSelectedSchedule) {
+      setAssignmentScheduleId(schedules[0]?.id ?? "");
+    }
+  }, [assignmentScheduleId, schedules]);
+
+  useEffect(() => {
+    const hasSelectedPerson = people.some(
+      (person) => person.id === assignmentPersonId,
+    );
+    if (!hasSelectedPerson) {
+      setAssignmentPersonId(people[0]?.id ?? "");
+    }
+  }, [assignmentPersonId, people]);
 
   function onNameChange(value: string) {
     setDisplayName(value);
@@ -481,6 +546,61 @@ export default function HomePage() {
       setWorkspaceMessage("API indisponivel ao criar escala.");
     } finally {
       setIsSubmittingSchedule(false);
+    }
+  }
+
+  async function assignPersonToSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    const scheduleId = assignmentScheduleId || schedules[0]?.id;
+    const personId = assignmentPersonId || people[0]?.id;
+
+    if (!scheduleId || !personId) {
+      setWorkspaceMessage("Crie uma escala e cadastre uma pessoa antes de escalar.");
+      return;
+    }
+
+    setIsSubmittingAssignment(true);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedules/${scheduleId}/assignments`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            personId,
+            status: assignmentStatus,
+          }),
+        },
+      );
+
+      if (response.status === 409) {
+        const payload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(
+          payload.message ??
+            "Nao foi possivel escalar essa pessoa nesta escala.",
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel escalar a pessoa.");
+        return;
+      }
+
+      setWorkspaceMessage("Pessoa escalada.");
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setWorkspaceMessage("API indisponivel ao escalar pessoa.");
+    } finally {
+      setIsSubmittingAssignment(false);
     }
   }
 
@@ -814,8 +934,86 @@ export default function HomePage() {
                 </button>
               </form>
 
-              <SchedulePanel schedules={schedules} />
+              <form className="panel" onSubmit={assignPersonToSchedule}>
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Alocacao manual</p>
+                    <h2>Escalar pessoa</h2>
+                  </div>
+                  <span className="count-badge">{people.length}</span>
+                </div>
+
+                <label>
+                  Escala
+                  <select
+                    disabled={schedules.length === 0}
+                    onChange={(event) =>
+                      setAssignmentScheduleId(event.target.value)
+                    }
+                    required
+                    value={assignmentScheduleId}
+                  >
+                    {schedules.length === 0 ? (
+                      <option value="">Crie uma escala</option>
+                    ) : null}
+                    {schedules.map((schedule) => (
+                      <option key={schedule.id} value={schedule.id}>
+                        {schedule.title} - {formatDate(schedule.startsAt)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  Pessoa
+                  <select
+                    disabled={people.length === 0}
+                    onChange={(event) => setAssignmentPersonId(event.target.value)}
+                    required
+                    value={assignmentPersonId}
+                  >
+                    {people.length === 0 ? (
+                      <option value="">Cadastre uma pessoa</option>
+                    ) : null}
+                    {people.map((person) => (
+                      <option key={person.id} value={person.id}>
+                        {person.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  Status inicial
+                  <select
+                    onChange={(event) =>
+                      setAssignmentStatus(
+                        event.target.value as "externally_confirmed" | "invited",
+                      )
+                    }
+                    value={assignmentStatus}
+                  >
+                    <option value="externally_confirmed">
+                      Confirmado pelo gestor
+                    </option>
+                    <option value="invited">Convidado / aguardando aceite</option>
+                  </select>
+                </label>
+
+                <button
+                  className="primary-button"
+                  disabled={
+                    isSubmittingAssignment ||
+                    people.length === 0 ||
+                    schedules.length === 0
+                  }
+                >
+                  {isSubmittingAssignment ? "Salvando..." : "Escalar pessoa"}
+                </button>
+              </form>
             </div>
+
+            <SchedulePanel schedules={schedules} />
 
             <div className="management-grid">
               <ListPanel
@@ -897,8 +1095,24 @@ function SchedulePanel({ schedules }: { schedules: ScheduleDraft[] }) {
               </p>
               <div className="schedule-meta">
                 <span>{schedule.slot.function.name}</span>
-                <span>{schedule.slot.requiredCount} vaga(s)</span>
+                <span>
+                  {schedule.assignments.length}/{schedule.slot.requiredCount}{" "}
+                  vaga(s)
+                </span>
               </div>
+
+              {schedule.assignments.length === 0 ? (
+                <div className="assignment-empty">Nenhuma pessoa escalada.</div>
+              ) : (
+                <div className="assignment-list">
+                  {schedule.assignments.map((assignment) => (
+                    <div className="assignment-item" key={assignment.id}>
+                      <strong>{assignment.assigneeName}</strong>
+                      <span>{assignmentStatusLabel(assignment.status)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </article>
           ))}
         </div>
