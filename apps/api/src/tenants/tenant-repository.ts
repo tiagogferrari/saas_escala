@@ -112,3 +112,16 @@ export async function listTenants() {
 
   return result.rows.map(mapTenant);
 }
+
+export async function getTenantBySlug(slug: string) {
+  const result = await pool.query<TenantRow>(
+    `select id, slug, display_name, schema_name, timezone, locale, status, created_at
+     from core.tenants
+     where slug = $1
+     limit 1`,
+    [slug],
+  );
+
+  const tenant = result.rows[0];
+  return tenant ? mapTenant(tenant) : null;
+}

@@ -4,6 +4,8 @@ import Fastify from "fastify";
 import { z, ZodError } from "zod";
 import "./config/load-env";
 import { checkDatabase } from "./db/pool";
+import { locationRoutes } from "./locations/location-routes";
+import { peopleRoutes } from "./people/people-routes";
 import { tenantRoutes } from "./tenants/tenant-routes";
 
 const envSchema = z.object({
@@ -54,6 +56,8 @@ app.get("/", async () => ({
 }));
 
 await app.register(tenantRoutes);
+await app.register(peopleRoutes);
+await app.register(locationRoutes);
 
 try {
   await app.listen({ host: env.API_HOST, port: env.API_PORT });

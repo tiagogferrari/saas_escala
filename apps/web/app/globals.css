@@ -260,11 +260,36 @@ input:focus {
 }
 
 .tenant-card {
+  background: #fff;
   border: 1px solid var(--color-border);
   border-radius: 1rem;
+  color: var(--color-text);
   display: grid;
   gap: 16px;
   padding: 18px;
+  text-align: left;
+  width: 100%;
+}
+
+.tenant-card:hover,
+.tenant-card.is-selected {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 4px rgb(37 99 235 / 0.1);
+}
+
+.select-button {
+  background: #eff6ff;
+  border-radius: var(--radius-control);
+  color: var(--color-brand);
+  cursor: pointer;
+  font-weight: 800;
+  justify-self: start;
+  padding: 0.55rem 0.85rem;
+}
+
+.tenant-card.is-selected .select-button {
+  background: var(--color-brand);
+  color: #fff;
 }
 
 .tenant-card strong {
@@ -297,6 +322,85 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.workspace {
+  margin-top: 18px;
+}
+
+.workspace-header {
+  align-items: center;
+  background: var(--color-text);
+  border-radius: var(--radius-card);
+  color: #fff;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 26px;
+}
+
+.workspace-header .eyebrow {
+  color: #93c5fd;
+}
+
+.workspace-header h2 {
+  color: #fff;
+  font-size: 2rem;
+}
+
+.workspace-header p {
+  color: #cbd5e1;
+  margin: 8px 0 0;
+}
+
+.workspace-message {
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius-control);
+  color: #166534;
+  font-weight: 700;
+  margin: 0 0 18px;
+  padding: 14px 16px;
+}
+
+.management-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
+.count-badge {
+  align-items: center;
+  background: #eff6ff;
+  border-radius: 999px;
+  color: var(--color-brand);
+  display: inline-flex;
+  font-size: 0.85rem;
+  font-weight: 800;
+  height: 32px;
+  justify-content: center;
+  min-width: 32px;
+  padding: 0 10px;
+}
+
+.simple-list {
+  display: grid;
+  gap: 10px;
+}
+
+.simple-list-item {
+  background: #f8fafc;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+}
+
+.simple-list-item span {
+  color: var(--color-muted);
+}
+
 @media (max-width: 860px) {
   .shell {
     padding: 32px 16px;
@@ -304,8 +408,14 @@ dd {
 
   .hero,
   .content-grid,
-  .stats-grid {
+  .stats-grid,
+  .management-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-header {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   dl {
