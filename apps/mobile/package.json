@@ -1,0 +1,26 @@
+{
+  "name": "@escala/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo/AppEntry.js",
+  "scripts": {
+    "dev": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "build": "echo \"Mobile build will be configured after MVP validation\"",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@escala/design-tokens": "workspace:*",
+    "@escala/shared": "workspace:*",
+    "expo": "^52.0.23",
+    "expo-status-bar": "~2.0.0",
+    "react": "^18.3.1",
+    "react-native": "0.76.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "typescript": "^5.7.2"
+  }
+}

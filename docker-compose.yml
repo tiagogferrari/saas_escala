@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: escala_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-escala_saas}
+      POSTGRES_USER: ${POSTGRES_USER:-escala}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-escala_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - escala_postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-escala} -d ${POSTGRES_DB:-escala_saas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: escala_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - escala_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: escala_mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+volumes:
+  escala_postgres_data:
+  escala_redis_data:

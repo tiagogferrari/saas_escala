@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "SaaS Escala",
+    "slug": "saas-escala",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["android", "ios"],
+    "android": {
+      "package": "com.tiagogferrari.saas_escala"
+    },
+    "ios": {
+      "bundleIdentifier": "com.tiagogferrari.saas-escala"
+    }
+  }
+}
