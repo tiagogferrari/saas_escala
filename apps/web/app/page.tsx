@@ -30,6 +30,37 @@ type Location = {
   createdAt: string;
 };
 
+type ScheduleFunction = {
+  id: string;
+  name: string;
+  description: string | null;
+  isDefault: boolean;
+  createdAt: string;
+};
+
+type ScheduleDraft = {
+  id: string;
+  title: string;
+  status: string;
+  startsAt: string;
+  endsAt: string;
+  meetingPoint: string | null;
+  instructions: string | null;
+  location: {
+    id: string;
+    name: string;
+  };
+  slot: {
+    id: string;
+    requiredCount: number;
+    function: {
+      id: string;
+      name: string;
+    };
+  };
+  createdAt: string;
+};
+
 type ApiStatus = "checking" | "online" | "offline";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3333";
@@ -39,6 +70,25 @@ function formatDate(value: string) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function toDatetimeLocalInputValue(date: Date) {
+  const timezoneOffset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16);
+}
+
+function getDefaultScheduleWindow() {
+  const startsAt = new Date();
+  startsAt.setDate(startsAt.getDate() + 1);
+  startsAt.setHours(8, 0, 0, 0);
+
+  const endsAt = new Date(startsAt);
+  endsAt.setHours(startsAt.getHours() + 1);
+
+  return {
+    startsAt: toDatetimeLocalInputValue(startsAt),
+    endsAt: toDatetimeLocalInputValue(endsAt),
+  };
 }
 
 function slugify(value: string) {
@@ -51,6 +101,26 @@ function slugify(value: string) {
     .slice(0, 60);
 }
 
+function scheduleStatusLabel(status: string) {
+  if (status === "draft") {
+    return "Rascunho";
+  }
+
+  if (status === "published") {
+    return "Publicado";
+  }
+
+  if (status === "cancelled") {
+    return "Cancelado";
+  }
+
+  if (status === "completed") {
+    return "Finalizado";
+  }
+
+  return status;
+}
+
 export default function HomePage() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [dbStatus, setDbStatus] = useState<ApiStatus>("checking");
@@ -60,6 +130,10 @@ export default function HomePage() {
   );
   const [people, setPeople] = useState<Person[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [scheduleFunctions, setScheduleFunctions] = useState<
+    ScheduleFunction[]
+  >([]);
+  const [schedules, setSchedules] = useState<ScheduleDraft[]>([]);
 
   const [displayName, setDisplayName] = useState("Piloto Marcelo");
   const [slug, setSlug] = useState("piloto-marcelo");
@@ -68,10 +142,21 @@ export default function HomePage() {
   const [personPhone, setPersonPhone] = useState("");
   const [locationName, setLocationName] = useState("");
   const [locationAddress, setLocationAddress] = useState("");
+  const [scheduleTitle, setScheduleTitle] = useState("Abertura");
+  const [scheduleLocationId, setScheduleLocationId] = useState("");
+  const [scheduleFunctionId, setScheduleFunctionId] = useState("");
+  const [scheduleStartsAt, setScheduleStartsAt] = useState(
+    () => getDefaultScheduleWindow().startsAt,
+  );
+  const [scheduleEndsAt, setScheduleEndsAt] = useState(
+    () => getDefaultScheduleWindow().endsAt,
+  );
+  const [scheduleRequiredCount, setScheduleRequiredCount] = useState(1);
 
   const [isSubmittingTenant, setIsSubmittingTenant] = useState(false);
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
   const [isSubmittingLocation, setIsSubmittingLocation] = useState(false);
+  const [isSubmittingSchedule, setIsSubmittingSchedule] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
 
@@ -115,12 +200,24 @@ export default function HomePage() {
   }
 
   async function loadTenantData(tenantSlug: string) {
-    const [peopleResponse, locationsResponse] = await Promise.all([
+    const [
+      peopleResponse,
+      locationsResponse,
+      functionsResponse,
+      schedulesResponse,
+    ] = await Promise.all([
       fetch(`${apiUrl}/tenants/${tenantSlug}/people`, { cache: "no-store" }),
       fetch(`${apiUrl}/tenants/${tenantSlug}/locations`, { cache: "no-store" }),
+      fetch(`${apiUrl}/tenants/${tenantSlug}/functions`, { cache: "no-store" }),
+      fetch(`${apiUrl}/tenants/${tenantSlug}/schedules`, { cache: "no-store" }),
     ]);
 
-    if (!peopleResponse.ok || !locationsResponse.ok) {
+    if (
+      !peopleResponse.ok ||
+      !locationsResponse.ok ||
+      !functionsResponse.ok ||
+      !schedulesResponse.ok
+    ) {
       throw new Error("Erro ao carregar dados do espaco");
     }
 
@@ -128,9 +225,17 @@ export default function HomePage() {
     const locationsPayload = (await locationsResponse.json()) as {
       data: Location[];
     };
+    const functionsPayload = (await functionsResponse.json()) as {
+      data: ScheduleFunction[];
+    };
+    const schedulesPayload = (await schedulesResponse.json()) as {
+      data: ScheduleDraft[];
+    };
 
     setPeople(peoplePayload.data);
     setLocations(locationsPayload.data);
+    setScheduleFunctions(functionsPayload.data);
+    setSchedules(schedulesPayload.data);
   }
 
   async function refresh() {
@@ -155,13 +260,41 @@ export default function HomePage() {
       void loadTenantData(selectedTenantSlug).catch(() => {
         setPeople([]);
         setLocations([]);
+        setScheduleFunctions([]);
+        setSchedules([]);
       });
     }
   }, [selectedTenantSlug]);
 
+  useEffect(() => {
+    const hasSelectedLocation = locations.some(
+      (location) => location.id === scheduleLocationId,
+    );
+    if (!hasSelectedLocation) {
+      setScheduleLocationId(locations[0]?.id ?? "");
+    }
+  }, [locations, scheduleLocationId]);
+
+  useEffect(() => {
+    const hasSelectedFunction = scheduleFunctions.some(
+      (scheduleFunction) => scheduleFunction.id === scheduleFunctionId,
+    );
+    if (!hasSelectedFunction) {
+      setScheduleFunctionId(scheduleFunctions[0]?.id ?? "");
+    }
+  }, [scheduleFunctions, scheduleFunctionId]);
+
   function onNameChange(value: string) {
     setDisplayName(value);
     setSlug(slugify(value));
+  }
+
+  function resetScheduleForm() {
+    const scheduleWindow = getDefaultScheduleWindow();
+    setScheduleTitle("Abertura");
+    setScheduleStartsAt(scheduleWindow.startsAt);
+    setScheduleEndsAt(scheduleWindow.endsAt);
+    setScheduleRequiredCount(1);
   }
 
   async function createTenant(event: FormEvent<HTMLFormElement>) {
@@ -286,6 +419,71 @@ export default function HomePage() {
     }
   }
 
+  async function createSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    const locationId = scheduleLocationId || locations[0]?.id;
+    const functionId = scheduleFunctionId || scheduleFunctions[0]?.id;
+
+    if (!locationId || !functionId) {
+      setWorkspaceMessage(
+        "Cadastre pelo menos um local e confirme se a funcao Abertura existe.",
+      );
+      return;
+    }
+
+    const startsAt = new Date(scheduleStartsAt);
+    const endsAt = new Date(scheduleEndsAt);
+
+    if (
+      Number.isNaN(startsAt.getTime()) ||
+      Number.isNaN(endsAt.getTime()) ||
+      startsAt >= endsAt
+    ) {
+      setWorkspaceMessage("Confira o horario: o fim precisa ser depois do inicio.");
+      return;
+    }
+
+    setIsSubmittingSchedule(true);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedules`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            title: scheduleTitle,
+            locationId,
+            functionId,
+            startsAt: startsAt.toISOString(),
+            endsAt: endsAt.toISOString(),
+            requiredCount: scheduleRequiredCount,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel criar a escala.");
+        return;
+      }
+
+      resetScheduleForm();
+      setWorkspaceMessage("Escala em rascunho criada.");
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setWorkspaceMessage("API indisponivel ao criar escala.");
+    } finally {
+      setIsSubmittingSchedule(false);
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero">
@@ -293,17 +491,17 @@ export default function HomePage() {
           <p className="eyebrow">SaaS Escala</p>
           <h1>Gestao inteligente de escalas e voluntariado</h1>
           <p className="hero-copy">
-            Painel inicial para validar espacos, pessoas e locais antes da
-            primeira escala.
+            Painel inicial para validar espacos, pessoas, locais e as primeiras
+            escalas em rascunho.
           </p>
         </div>
 
         <div className="hero-card">
           <span className="hero-card-label">Fluxo atual</span>
-          <strong>Criar espaco, cadastrar pessoas e cadastrar locais.</strong>
+          <strong>Criar espaco, cadastrar base e montar rascunho.</strong>
           <p>
-            Depois disso, o proximo passo sera montar a primeira escala em
-            rascunho.
+            A confirmacao e os convites entram no proximo passo, em cima de uma
+            escala real.
           </p>
         </div>
       </section>
@@ -419,7 +617,11 @@ export default function HomePage() {
             )}
           </div>
           {selectedTenant ? (
-            <button className="ghost-button" onClick={() => refresh()}>
+            <button
+              className="ghost-button"
+              onClick={() => refresh()}
+              type="button"
+            >
               Recarregar dados
             </button>
           ) : null}
@@ -496,6 +698,126 @@ export default function HomePage() {
             </div>
 
             <div className="management-grid">
+              <form className="panel" onSubmit={createSchedule}>
+                <div className="panel-header">
+                  <div>
+                    <p className="eyebrow">Escalas</p>
+                    <h2>Criar rascunho</h2>
+                  </div>
+                  <span className="count-badge">{schedules.length}</span>
+                </div>
+
+                <div className="form-grid">
+                  <label className="full-field">
+                    Titulo
+                    <input
+                      value={scheduleTitle}
+                      onChange={(event) => setScheduleTitle(event.target.value)}
+                      placeholder="Abertura"
+                      required
+                    />
+                  </label>
+
+                  <label>
+                    Local
+                    <select
+                      disabled={locations.length === 0}
+                      onChange={(event) =>
+                        setScheduleLocationId(event.target.value)
+                      }
+                      required
+                      value={scheduleLocationId}
+                    >
+                      {locations.length === 0 ? (
+                        <option value="">Cadastre um local</option>
+                      ) : null}
+                      {locations.map((location) => (
+                        <option key={location.id} value={location.id}>
+                          {location.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Funcao
+                    <select
+                      disabled={scheduleFunctions.length === 0}
+                      onChange={(event) =>
+                        setScheduleFunctionId(event.target.value)
+                      }
+                      required
+                      value={scheduleFunctionId}
+                    >
+                      {scheduleFunctions.length === 0 ? (
+                        <option value="">Nenhuma funcao</option>
+                      ) : null}
+                      {scheduleFunctions.map((scheduleFunction) => (
+                        <option
+                          key={scheduleFunction.id}
+                          value={scheduleFunction.id}
+                        >
+                          {scheduleFunction.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Inicio
+                    <input
+                      onChange={(event) =>
+                        setScheduleStartsAt(event.target.value)
+                      }
+                      required
+                      type="datetime-local"
+                      value={scheduleStartsAt}
+                    />
+                  </label>
+
+                  <label>
+                    Fim
+                    <input
+                      onChange={(event) => setScheduleEndsAt(event.target.value)}
+                      required
+                      type="datetime-local"
+                      value={scheduleEndsAt}
+                    />
+                  </label>
+
+                  <label className="full-field">
+                    Vagas
+                    <input
+                      min={1}
+                      max={50}
+                      onChange={(event) =>
+                        setScheduleRequiredCount(
+                          Math.max(1, Number(event.target.value) || 1),
+                        )
+                      }
+                      required
+                      type="number"
+                      value={scheduleRequiredCount}
+                    />
+                  </label>
+                </div>
+
+                <button
+                  className="primary-button"
+                  disabled={
+                    isSubmittingSchedule ||
+                    locations.length === 0 ||
+                    scheduleFunctions.length === 0
+                  }
+                >
+                  {isSubmittingSchedule ? "Salvando..." : "Criar rascunho"}
+                </button>
+              </form>
+
+              <SchedulePanel schedules={schedules} />
+            </div>
+
+            <div className="management-grid">
               <ListPanel
                 emptyText="Nenhuma pessoa cadastrada ainda."
                 items={people.map((person) => ({
@@ -540,6 +862,48 @@ function StatusCard({ label, status }: { label: string; status: ApiStatus }) {
           : "Ambiente local"}
       </small>
     </article>
+  );
+}
+
+function SchedulePanel({ schedules }: { schedules: ScheduleDraft[] }) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Agenda</p>
+          <h2>Rascunhos</h2>
+        </div>
+        <span className="count-badge">{schedules.length}</span>
+      </div>
+
+      {schedules.length === 0 ? (
+        <div className="empty-state">
+          <strong>Nenhuma escala em rascunho ainda.</strong>
+          <p>Crie a primeira escala para liberar o proximo fluxo.</p>
+        </div>
+      ) : (
+        <div className="schedule-list">
+          {schedules.map((schedule) => (
+            <article className="schedule-card" key={schedule.id}>
+              <header>
+                <div>
+                  <strong>{schedule.title}</strong>
+                  <span>{schedule.location.name}</span>
+                </div>
+                <span className="pill">{scheduleStatusLabel(schedule.status)}</span>
+              </header>
+              <p>
+                {formatDate(schedule.startsAt)} ate {formatDate(schedule.endsAt)}
+              </p>
+              <div className="schedule-meta">
+                <span>{schedule.slot.function.name}</span>
+                <span>{schedule.slot.requiredCount} vaga(s)</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
