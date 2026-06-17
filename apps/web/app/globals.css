@@ -218,6 +218,7 @@ textarea:disabled {
 
 .primary-button,
 .ghost-button,
+.danger-button,
 .secondary-button {
   border-radius: var(--radius-control);
   cursor: pointer;
@@ -256,6 +257,17 @@ textarea:disabled {
 }
 
 .secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.danger-button {
+  background: #fee2e2;
+  color: var(--color-danger);
+  padding: 0.7rem 0.9rem;
+}
+
+.danger-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -541,6 +553,96 @@ dd {
   font-size: 0.85rem;
   font-weight: 700;
   text-align: right;
+}
+
+.member-portal {
+  margin-bottom: 18px;
+}
+
+.member-toolbar {
+  max-width: 420px;
+}
+
+.member-message {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-control);
+  color: #1e40af;
+  font-weight: 700;
+  margin: 0 0 18px;
+  padding: 12px 14px;
+}
+
+.member-schedule-list {
+  display: grid;
+  gap: 12px;
+}
+
+.member-schedule-card {
+  background: #f8fafc;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 16px;
+}
+
+.member-schedule-card header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.member-schedule-card strong,
+.member-schedule-card span {
+  display: block;
+}
+
+.member-schedule-card header span,
+.member-schedule-card p {
+  color: var(--color-muted);
+}
+
+.member-schedule-card p {
+  line-height: 1.45;
+  margin: 14px 0 0;
+}
+
+.companion-list {
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.companion-list > span {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.companion-list > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.companion-list strong {
+  background: #eff6ff;
+  border-radius: 999px;
+  color: var(--color-brand);
+  font-size: 0.85rem;
+  padding: 0.38rem 0.65rem;
+}
+
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 @media (max-width: 860px) {

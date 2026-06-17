@@ -74,6 +74,30 @@ type ScheduleDraft = {
   createdAt: string;
 };
 
+type MemberSchedule = {
+  assignment: ScheduleAssignment;
+  schedule: {
+    id: string;
+    title: string;
+    status: string;
+    startsAt: string;
+    endsAt: string;
+    location: {
+      id: string;
+      name: string;
+    };
+    slot: {
+      id: string;
+      requiredCount: number;
+      function: {
+        id: string;
+        name: string;
+      };
+    };
+  };
+  companions: ScheduleAssignment[];
+};
+
 type ApiStatus = "checking" | "online" | "offline";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3333";
@@ -162,6 +186,18 @@ function assignmentStatusLabel(status: string) {
   return status;
 }
 
+function isActiveAssignmentStatus(status: string) {
+  return ["invited", "pending", "confirmed", "externally_confirmed"].includes(
+    status,
+  );
+}
+
+function countActiveAssignments(schedule: ScheduleDraft) {
+  return schedule.assignments.filter((assignment) =>
+    isActiveAssignmentStatus(assignment.status),
+  ).length;
+}
+
 export default function HomePage() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [dbStatus, setDbStatus] = useState<ApiStatus>("checking");
@@ -198,6 +234,8 @@ export default function HomePage() {
   const [assignmentStatus, setAssignmentStatus] = useState<
     "externally_confirmed" | "invited"
   >("externally_confirmed");
+  const [memberPersonId, setMemberPersonId] = useState("");
+  const [memberSchedules, setMemberSchedules] = useState<MemberSchedule[]>([]);
 
   const [isSubmittingTenant, setIsSubmittingTenant] = useState(false);
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
@@ -207,8 +245,13 @@ export default function HomePage() {
   const [publishingScheduleId, setPublishingScheduleId] = useState<string | null>(
     null,
   );
+  const [isLoadingMemberSchedules, setIsLoadingMemberSchedules] = useState(false);
+  const [respondingAssignmentId, setRespondingAssignmentId] = useState<
+    string | null
+  >(null);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
+  const [memberMessage, setMemberMessage] = useState<string | null>(null);
 
   const activeTenants = useMemo(
     () => tenants.filter((tenant) => tenant.status === "active").length,
@@ -292,10 +335,44 @@ export default function HomePage() {
     setSchedules(schedulesPayload.data);
   }
 
+  async function loadMemberSchedules(tenantSlug: string, personId: string) {
+    if (!personId) {
+      setMemberSchedules([]);
+      return;
+    }
+
+    setIsLoadingMemberSchedules(true);
+    setMemberMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${tenantSlug}/people/${personId}/member-schedules`,
+        { cache: "no-store" },
+      );
+
+      if (!response.ok) {
+        setMemberSchedules([]);
+        setMemberMessage("Nao foi possivel carregar a visao do membro.");
+        return;
+      }
+
+      const payload = (await response.json()) as { data: MemberSchedule[] };
+      setMemberSchedules(payload.data);
+    } catch {
+      setMemberSchedules([]);
+      setMemberMessage("API indisponivel ao carregar a visao do membro.");
+    } finally {
+      setIsLoadingMemberSchedules(false);
+    }
+  }
+
   async function refresh() {
     await Promise.all([loadStatus(), loadTenants()]);
     if (selectedTenantSlug) {
       await loadTenantData(selectedTenantSlug);
+      if (memberPersonId) {
+        await loadMemberSchedules(selectedTenantSlug, memberPersonId);
+      }
     }
   }
 
@@ -316,6 +393,7 @@ export default function HomePage() {
         setLocations([]);
         setScheduleFunctions([]);
         setSchedules([]);
+        setMemberSchedules([]);
       });
     }
   }, [selectedTenantSlug]);
@@ -355,6 +433,23 @@ export default function HomePage() {
       setAssignmentPersonId(people[0]?.id ?? "");
     }
   }, [assignmentPersonId, people]);
+
+  useEffect(() => {
+    const hasSelectedMember = people.some(
+      (person) => person.id === memberPersonId,
+    );
+    if (!hasSelectedMember) {
+      setMemberPersonId(people[0]?.id ?? "");
+    }
+  }, [memberPersonId, people]);
+
+  useEffect(() => {
+    if (selectedTenantSlug && memberPersonId) {
+      void loadMemberSchedules(selectedTenantSlug, memberPersonId);
+    } else {
+      setMemberSchedules([]);
+    }
+  }, [memberPersonId, selectedTenantSlug]);
 
   function onNameChange(value: string) {
     setDisplayName(value);
@@ -644,6 +739,53 @@ export default function HomePage() {
       setWorkspaceMessage("API indisponivel ao publicar escala.");
     } finally {
       setPublishingScheduleId(null);
+    }
+  }
+
+  async function respondToMemberSchedule(
+    assignmentId: string,
+    status: "confirmed" | "declined",
+  ) {
+    if (!selectedTenantSlug || !memberPersonId) {
+      return;
+    }
+
+    setRespondingAssignmentId(assignmentId);
+    setMemberMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/respond`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status }),
+        },
+      );
+
+      if (response.status === 409 || response.status === 404) {
+        const payload = (await response.json()) as { message?: string };
+        setMemberMessage(payload.message ?? "Nao foi possivel responder.");
+        return;
+      }
+
+      if (!response.ok) {
+        setMemberMessage("Nao foi possivel responder essa escala.");
+        return;
+      }
+
+      const payload = (await response.json()) as { data: MemberSchedule[] };
+      setMemberSchedules(payload.data);
+      setMemberMessage(
+        status === "confirmed" ? "Presenca confirmada." : "Convite recusado.",
+      );
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setMemberMessage("API indisponivel ao responder escala.");
+    } finally {
+      setRespondingAssignmentId(null);
     }
   }
 
@@ -1062,6 +1204,17 @@ export default function HomePage() {
               schedules={schedules}
             />
 
+            <MemberPortal
+              isLoading={isLoadingMemberSchedules}
+              memberMessage={memberMessage}
+              memberSchedules={memberSchedules}
+              onMemberChange={setMemberPersonId}
+              onRespond={respondToMemberSchedule}
+              people={people}
+              respondingAssignmentId={respondingAssignmentId}
+              selectedMemberId={memberPersonId}
+            />
+
             <div className="management-grid">
               <ListPanel
                 emptyText="Nenhuma pessoa cadastrada ainda."
@@ -1137,60 +1290,222 @@ function SchedulePanel({
       ) : (
         <div className="schedule-list">
           {schedules.map((schedule) => (
-            <article className="schedule-card" key={schedule.id}>
-              <header>
-                <div>
-                  <strong>{schedule.title}</strong>
-                  <span>{schedule.location.name}</span>
-                </div>
-                <span className="pill">{scheduleStatusLabel(schedule.status)}</span>
-              </header>
-              <p>
-                {formatDate(schedule.startsAt)} ate {formatDate(schedule.endsAt)}
-              </p>
-              <div className="schedule-meta">
-                <span>{schedule.slot.function.name}</span>
-                <span>
-                  {schedule.assignments.length}/{schedule.slot.requiredCount}{" "}
-                  vaga(s)
-                </span>
-              </div>
-
-              {schedule.status === "draft" ? (
-                <div className="schedule-actions">
-                  <button
-                    className="secondary-button"
-                    disabled={
-                      publishingScheduleId === schedule.id ||
-                      schedule.assignments.length < schedule.slot.requiredCount
-                    }
-                    onClick={() => void onPublishSchedule(schedule.id)}
-                    type="button"
-                  >
-                    {publishingScheduleId === schedule.id
-                      ? "Publicando..."
-                      : "Publicar escala"}
-                  </button>
-                  {schedule.assignments.length < schedule.slot.requiredCount ? (
-                    <span>Preencha todas as vagas para publicar.</span>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {schedule.assignments.length === 0 ? (
-                <div className="assignment-empty">Nenhuma pessoa escalada.</div>
-              ) : (
-                <div className="assignment-list">
-                  {schedule.assignments.map((assignment) => (
-                    <div className="assignment-item" key={assignment.id}>
-                      <strong>{assignment.assigneeName}</strong>
-                      <span>{assignmentStatusLabel(assignment.status)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
+            <ScheduleCard
+              key={schedule.id}
+              onPublishSchedule={onPublishSchedule}
+              publishingScheduleId={publishingScheduleId}
+              schedule={schedule}
+            />
           ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ScheduleCard({
+  onPublishSchedule,
+  publishingScheduleId,
+  schedule,
+}: {
+  onPublishSchedule: (scheduleId: string) => Promise<void>;
+  publishingScheduleId: string | null;
+  schedule: ScheduleDraft;
+}) {
+  const activeAssignmentCount = countActiveAssignments(schedule);
+
+  return (
+    <article className="schedule-card">
+      <header>
+        <div>
+          <strong>{schedule.title}</strong>
+          <span>{schedule.location.name}</span>
+        </div>
+        <span className="pill">{scheduleStatusLabel(schedule.status)}</span>
+      </header>
+      <p>
+        {formatDate(schedule.startsAt)} ate {formatDate(schedule.endsAt)}
+      </p>
+      <div className="schedule-meta">
+        <span>{schedule.slot.function.name}</span>
+        <span>
+          {activeAssignmentCount}/{schedule.slot.requiredCount} vaga(s)
+        </span>
+      </div>
+
+      {schedule.status === "draft" ? (
+        <div className="schedule-actions">
+          <button
+            className="secondary-button"
+            disabled={
+              publishingScheduleId === schedule.id ||
+              activeAssignmentCount < schedule.slot.requiredCount
+            }
+            onClick={() => void onPublishSchedule(schedule.id)}
+            type="button"
+          >
+            {publishingScheduleId === schedule.id
+              ? "Publicando..."
+              : "Publicar escala"}
+          </button>
+          {activeAssignmentCount < schedule.slot.requiredCount ? (
+            <span>Preencha todas as vagas para publicar.</span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {schedule.assignments.length === 0 ? (
+        <div className="assignment-empty">Nenhuma pessoa escalada.</div>
+      ) : (
+        <div className="assignment-list">
+          {schedule.assignments.map((assignment) => (
+            <div className="assignment-item" key={assignment.id}>
+              <strong>{assignment.assigneeName}</strong>
+              <span>{assignmentStatusLabel(assignment.status)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function MemberPortal({
+  isLoading,
+  memberMessage,
+  memberSchedules,
+  onMemberChange,
+  onRespond,
+  people,
+  respondingAssignmentId,
+  selectedMemberId,
+}: {
+  isLoading: boolean;
+  memberMessage: string | null;
+  memberSchedules: MemberSchedule[];
+  onMemberChange: (personId: string) => void;
+  onRespond: (
+    assignmentId: string,
+    status: "confirmed" | "declined",
+  ) => Promise<void>;
+  people: Person[];
+  respondingAssignmentId: string | null;
+  selectedMemberId: string;
+}) {
+  return (
+    <section className="panel member-portal">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Portal do membro</p>
+          <h2>Minhas escalas</h2>
+        </div>
+        <span className="count-badge">{memberSchedules.length}</span>
+      </div>
+
+      <div className="member-toolbar">
+        <label>
+          Ver como
+          <select
+            disabled={people.length === 0}
+            onChange={(event) => onMemberChange(event.target.value)}
+            value={selectedMemberId}
+          >
+            {people.length === 0 ? (
+              <option value="">Cadastre uma pessoa</option>
+            ) : null}
+            {people.map((person) => (
+              <option key={person.id} value={person.id}>
+                {person.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {memberMessage ? <p className="member-message">{memberMessage}</p> : null}
+
+      {isLoading ? (
+        <div className="empty-state">
+          <strong>Carregando escalas do membro...</strong>
+        </div>
+      ) : memberSchedules.length === 0 ? (
+        <div className="empty-state">
+          <strong>Nenhuma escala publicada para essa pessoa.</strong>
+          <p>
+            Publique uma escala com essa pessoa para aparecer nesta visao.
+          </p>
+        </div>
+      ) : (
+        <div className="member-schedule-list">
+          {memberSchedules.map((memberSchedule) => {
+            const canRespond = ["invited", "pending"].includes(
+              memberSchedule.assignment.status,
+            );
+
+            return (
+              <article className="member-schedule-card" key={memberSchedule.assignment.id}>
+                <header>
+                  <div>
+                    <strong>{memberSchedule.schedule.title}</strong>
+                    <span>{memberSchedule.schedule.location.name}</span>
+                  </div>
+                  <span className="pill">
+                    {assignmentStatusLabel(memberSchedule.assignment.status)}
+                  </span>
+                </header>
+
+                <p>
+                  {formatDate(memberSchedule.schedule.startsAt)} ate{" "}
+                  {formatDate(memberSchedule.schedule.endsAt)}
+                </p>
+
+                <div className="schedule-meta">
+                  <span>{memberSchedule.schedule.slot.function.name}</span>
+                  <span>{scheduleStatusLabel(memberSchedule.schedule.status)}</span>
+                </div>
+
+                {memberSchedule.companions.length === 0 ? (
+                  <div className="assignment-empty">
+                    Nenhuma outra pessoa escalada no mesmo horario.
+                  </div>
+                ) : (
+                  <div className="companion-list">
+                    <span>Junto com</span>
+                    <div>
+                      {memberSchedule.companions.map((companion) => (
+                        <strong key={companion.id}>{companion.assigneeName}</strong>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {canRespond ? (
+                  <div className="inline-actions">
+                    <button
+                      className="secondary-button"
+                      disabled={respondingAssignmentId === memberSchedule.assignment.id}
+                      onClick={() =>
+                        void onRespond(memberSchedule.assignment.id, "confirmed")
+                      }
+                      type="button"
+                    >
+                      Confirmar
+                    </button>
+                    <button
+                      className="danger-button"
+                      disabled={respondingAssignmentId === memberSchedule.assignment.id}
+                      onClick={() =>
+                        void onRespond(memberSchedule.assignment.id, "declined")
+                      }
+                      type="button"
+                    >
+                      Recusar
+                    </button>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
         </div>
       )}
     </section>

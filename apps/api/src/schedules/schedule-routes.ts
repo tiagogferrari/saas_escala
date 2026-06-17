@@ -4,9 +4,12 @@ import { resolveTenantContext } from "../tenant-context/tenant-context";
 import {
   createScheduleAssignment,
   createScheduleDraft,
+  listMemberSchedules,
   listScheduleAssignments,
   listScheduleDrafts,
+  MemberScheduleError,
   publishSchedule,
+  respondToMemberScheduleAssignment,
   ScheduleAssignmentError,
   SchedulePublicationError,
 } from "./schedule-repository";
@@ -17,6 +20,14 @@ const tenantParamsSchema = z.object({
 
 const scheduleParamsSchema = tenantParamsSchema.extend({
   scheduleId: z.string().uuid(),
+});
+
+const memberParamsSchema = tenantParamsSchema.extend({
+  personId: z.string().uuid(),
+});
+
+const memberResponseParamsSchema = memberParamsSchema.extend({
+  assignmentId: z.string().uuid(),
 });
 
 const optionalTextSchema = z
@@ -48,6 +59,10 @@ const createAssignmentSchema = z.object({
   status: z.enum(["invited", "externally_confirmed"]).default(
     "externally_confirmed",
   ),
+});
+
+const respondAssignmentSchema = z.object({
+  status: z.enum(["confirmed", "declined"]),
 });
 
 function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply) {
@@ -82,6 +97,27 @@ function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply
   return reply.code(409).send({
     error: error.code,
     message: "Todas as vagas desta escala ja foram preenchidas.",
+  });
+}
+
+function sendMemberScheduleError(error: MemberScheduleError, reply: FastifyReply) {
+  if (error.code === "person_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Pessoa nao encontrada.",
+    });
+  }
+
+  if (error.code === "assignment_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Escala do membro nao encontrada.",
+    });
+  }
+
+  return reply.code(409).send({
+    error: error.code,
+    message: "Essa escala nao pode ser respondida pelo membro.",
   });
 }
 
@@ -152,6 +188,59 @@ export async function scheduleRoutes(app: FastifyInstance) {
       } catch (error) {
         if (error instanceof SchedulePublicationError) {
           return sendPublicationError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.get(
+    "/tenants/:tenantSlug/people/:personId/member-schedules",
+    async (request, reply) => {
+      const params = memberParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      try {
+        return {
+          data: await listMemberSchedules(context.schema, params.personId),
+        };
+      } catch (error) {
+        if (error instanceof MemberScheduleError) {
+          return sendMemberScheduleError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/tenants/:tenantSlug/people/:personId/assignments/:assignmentId/respond",
+    async (request, reply) => {
+      const params = memberResponseParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = respondAssignmentSchema.parse(request.body);
+
+      try {
+        return {
+          data: await respondToMemberScheduleAssignment(
+            context.schema,
+            params.personId,
+            params.assignmentId,
+            input.status,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof MemberScheduleError) {
+          return sendMemberScheduleError(error, reply);
         }
 
         throw error;

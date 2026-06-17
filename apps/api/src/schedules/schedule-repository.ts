@@ -37,6 +37,30 @@ export type ScheduleDraft = {
   createdAt: string;
 };
 
+export type MemberSchedule = {
+  assignment: ScheduleAssignment;
+  schedule: {
+    id: string;
+    title: string;
+    status: string;
+    startsAt: string;
+    endsAt: string;
+    location: {
+      id: string;
+      name: string;
+    };
+    slot: {
+      id: string;
+      requiredCount: number;
+      function: {
+        id: string;
+        name: string;
+      };
+    };
+  };
+  companions: ScheduleAssignment[];
+};
+
 export type CreateScheduleDraftInput = {
   title: string;
   locationId: string;
@@ -82,6 +106,27 @@ type ScheduleAssignmentRow = {
   created_at: Date;
 };
 
+type MemberScheduleRow = {
+  assignment_id: string;
+  assignment_status: string;
+  assignment_confirmed_at: Date | null;
+  assignment_confirmation_source: string | null;
+  assignment_created_at: Date;
+  assignee_id: string;
+  assignee_name: string;
+  schedule_id: string;
+  title: string;
+  schedule_status: string;
+  starts_at: Date;
+  ends_at: Date;
+  location_id: string;
+  location_name: string;
+  slot_id: string;
+  function_id: string;
+  function_name: string;
+  required_count: number;
+};
+
 type ScheduleAssignmentErrorCode =
   | "assignment_already_exists"
   | "person_not_found"
@@ -93,6 +138,11 @@ type SchedulePublicationErrorCode =
   | "schedule_not_draft"
   | "schedule_not_found"
   | "schedule_not_ready";
+
+type MemberScheduleErrorCode =
+  | "assignment_not_actionable"
+  | "assignment_not_found"
+  | "person_not_found";
 
 export class ScheduleAssignmentError extends Error {
   constructor(
@@ -106,6 +156,15 @@ export class ScheduleAssignmentError extends Error {
 export class SchedulePublicationError extends Error {
   constructor(
     public readonly code: SchedulePublicationErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export class MemberScheduleError extends Error {
+  constructor(
+    public readonly code: MemberScheduleErrorCode,
     message: string,
   ) {
     super(message);
@@ -135,6 +194,45 @@ function mapScheduleDraft(row: ScheduleDraftRow): ScheduleDraft {
     },
     assignments: [],
     createdAt: row.created_at.toISOString(),
+  };
+}
+
+function mapMemberSchedule(
+  row: MemberScheduleRow,
+  companions: ScheduleAssignment[],
+): MemberSchedule {
+  return {
+    assignment: {
+      id: row.assignment_id,
+      scheduleSlotId: row.slot_id,
+      assigneeType: "person",
+      assigneeId: row.assignee_id,
+      assigneeName: row.assignee_name,
+      status: row.assignment_status,
+      confirmedAt: row.assignment_confirmed_at?.toISOString() ?? null,
+      confirmationSource: row.assignment_confirmation_source,
+      createdAt: row.assignment_created_at.toISOString(),
+    },
+    schedule: {
+      id: row.schedule_id,
+      title: row.title,
+      status: row.schedule_status,
+      startsAt: row.starts_at.toISOString(),
+      endsAt: row.ends_at.toISOString(),
+      location: {
+        id: row.location_id,
+        name: row.location_name,
+      },
+      slot: {
+        id: row.slot_id,
+        requiredCount: row.required_count,
+        function: {
+          id: row.function_id,
+          name: row.function_name,
+        },
+      },
+    },
+    companions,
   };
 }
 
@@ -340,6 +438,69 @@ export async function listScheduleDrafts(schema: string) {
   );
 
   return attachAssignmentsToSchedules(schema, result.rows.map(mapScheduleDraft));
+}
+
+export async function listMemberSchedules(schema: string, personId: string) {
+  const personResult = await pool.query<{ id: string }>(
+    `select id
+     from ${schema}.people
+     where id = $1 and status = 'active'
+     limit 1`,
+    [personId],
+  );
+
+  if (!personResult.rows[0]) {
+    throw new MemberScheduleError("person_not_found", "Person not found.");
+  }
+
+  const result = await pool.query<MemberScheduleRow>(
+    `select
+       a.id as assignment_id,
+       a.status as assignment_status,
+       a.confirmed_at as assignment_confirmed_at,
+       a.confirmation_source as assignment_confirmation_source,
+       a.created_at as assignment_created_at,
+       a.assignee_id,
+       p.display_name as assignee_name,
+       s.id as schedule_id,
+       s.title,
+       s.status as schedule_status,
+       s.starts_at,
+       s.ends_at,
+       l.id as location_id,
+       l.name as location_name,
+       ss.id as slot_id,
+       f.id as function_id,
+       f.name as function_name,
+       ss.required_count
+     from ${schema}.assignments a
+     join ${schema}.people p on p.id = a.assignee_id
+     join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+     join ${schema}.schedules s on s.id = ss.schedule_id
+     join ${schema}.locations l on l.id = s.location_id
+     join ${schema}.functions f on f.id = ss.function_id
+     where a.assignee_type = 'person'
+       and a.assignee_id = $1
+       and s.status = 'published'
+     order by s.starts_at asc, s.created_at asc`,
+    [personId],
+  );
+
+  const assignmentsBySlot = await listAssignmentsBySlotIds(
+    schema,
+    result.rows.map((row) => row.slot_id),
+  );
+
+  return result.rows.map((row) => {
+    const companions = (assignmentsBySlot.get(row.slot_id) ?? []).filter(
+      (assignment) =>
+        assignment.id !== row.assignment_id &&
+        assignment.status !== "cancelled" &&
+        assignment.status !== "declined",
+    );
+
+    return mapMemberSchedule(row, companions);
+  });
 }
 
 export async function getScheduleDraftById(schema: string, scheduleId: string) {
@@ -606,4 +767,72 @@ export async function publishSchedule(schema: string, scheduleId: string) {
   }
 
   return getScheduleDraftById(schema, scheduleId);
+}
+
+export async function respondToMemberScheduleAssignment(
+  schema: string,
+  personId: string,
+  assignmentId: string,
+  status: "confirmed" | "declined",
+) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("begin");
+
+    const assignmentResult = await client.query<{
+      id: string;
+      status: string;
+    }>(
+      `select a.id, a.status
+       from ${schema}.assignments a
+       join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+       join ${schema}.schedules s on s.id = ss.schedule_id
+       where a.id = $1
+         and a.assignee_type = 'person'
+         and a.assignee_id = $2
+         and s.status = 'published'
+       limit 1`,
+      [assignmentId, personId],
+    );
+
+    const assignment = assignmentResult.rows[0];
+    if (!assignment) {
+      throw new MemberScheduleError(
+        "assignment_not_found",
+        "Assignment not found.",
+      );
+    }
+
+    if (!["invited", "pending", "confirmed", "declined"].includes(assignment.status)) {
+      throw new MemberScheduleError(
+        "assignment_not_actionable",
+        "Assignment cannot be answered by the member.",
+      );
+    }
+
+    await client.query(
+      `update ${schema}.assignments
+       set status = $1,
+           confirmed_at = $2,
+           confirmation_source = $3,
+           updated_at = now()
+       where id = $4`,
+      [
+        status,
+        status === "confirmed" ? new Date().toISOString() : null,
+        status === "confirmed" ? "member" : null,
+        assignmentId,
+      ],
+    );
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return listMemberSchedules(schema, personId);
 }
