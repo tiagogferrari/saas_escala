@@ -161,19 +161,27 @@ type MemberScheduleRow = {
 type ScheduleAssignmentErrorCode =
   | "assignment_already_exists"
   | "person_not_found"
+  | "person_unavailable"
   | "schedule_not_assignable"
   | "schedule_not_found"
   | "slot_full";
 
-type SchedulePublicationErrorCode =
-  | "schedule_not_draft"
-  | "schedule_not_found";
+type SchedulePublicationErrorCode = "schedule_not_draft" | "schedule_not_found";
 
 type MemberScheduleErrorCode =
   | "assignment_not_actionable"
   | "assignment_not_found"
   | "person_not_found"
   | "replacement_request_already_exists";
+
+type ReplacementRequestManagerErrorCode =
+  | "assignment_already_exists"
+  | "person_not_found"
+  | "person_unavailable"
+  | "replacement_candidate_not_confirmed"
+  | "replacement_request_not_found"
+  | "replacement_request_not_open"
+  | "schedule_not_assignable";
 
 export class ScheduleAssignmentError extends Error {
   constructor(
@@ -196,6 +204,15 @@ export class SchedulePublicationError extends Error {
 export class MemberScheduleError extends Error {
   constructor(
     public readonly code: MemberScheduleErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export class ReplacementRequestManagerError extends Error {
+  constructor(
+    public readonly code: ReplacementRequestManagerErrorCode,
     message: string,
   ) {
     super(message);
@@ -378,10 +395,52 @@ function replacementRequestJoin(schema: string) {
          rr.updated_at
        from ${schema}.replacement_requests rr
        where rr.assignment_id = a.id
-         and rr.status in ('requested', 'under_review', 'waiting_response', 'accepted')
+         and rr.status in ('requested', 'under_review', 'waiting_response', 'accepted', 'completed')
        order by rr.created_at desc
        limit 1
      ) rr on true`;
+}
+
+async function ensureReplacementRequestAssignmentLink(
+  client: PoolClient,
+  schema: string,
+) {
+  await client.query(`
+    alter table ${schema}.assignments
+      add column if not exists replacement_request_id uuid references ${schema}.replacement_requests (id)
+  `);
+
+  await client.query(`
+    create index if not exists assignments_replacement_request_idx
+      on ${schema}.assignments (replacement_request_id)
+  `);
+}
+
+async function hasOverlappingActiveAssignment(
+  client: PoolClient,
+  schema: string,
+  personId: string,
+  startsAt: Date,
+  endsAt: Date,
+  excludedScheduleId: string,
+) {
+  const result = await client.query<{ id: string }>(
+    `select a.id
+     from ${schema}.assignments a
+     join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+     join ${schema}.schedules s on s.id = ss.schedule_id
+     where a.assignee_type = 'person'
+       and a.assignee_id = $1
+       and a.status in ('invited', 'pending', 'confirmed', 'externally_confirmed')
+       and s.status in ('draft', 'published')
+       and s.id <> $4
+       and s.starts_at < $3
+       and s.ends_at > $2
+     limit 1`,
+    [personId, startsAt, endsAt, excludedScheduleId],
+  );
+
+  return Boolean(result.rows[0]);
 }
 
 async function listAssignmentsBySlotIds(schema: string, slotIds: string[]) {
@@ -406,7 +465,8 @@ async function listAssignmentsBySlotIds(schema: string, slotIds: string[]) {
 
   for (const row of result.rows) {
     const assignment = mapScheduleAssignment(row);
-    const currentAssignments = assignmentsBySlot.get(row.schedule_slot_id) ?? [];
+    const currentAssignments =
+      assignmentsBySlot.get(row.schedule_slot_id) ?? [];
     currentAssignments.push(assignment);
     assignmentsBySlot.set(row.schedule_slot_id, currentAssignments);
   }
@@ -542,7 +602,10 @@ export async function listScheduleDrafts(schema: string) {
      limit 100`,
   );
 
-  return attachAssignmentsToSchedules(schema, result.rows.map(mapScheduleDraft));
+  return attachAssignmentsToSchedules(
+    schema,
+    result.rows.map(mapScheduleDraft),
+  );
 }
 
 export async function listMemberSchedules(schema: string, personId: string) {
@@ -594,6 +657,7 @@ export async function listMemberSchedules(schema: string, personId: string) {
      ${replacementRequestJoin(schema)}
      where a.assignee_type = 'person'
        and a.assignee_id = $1
+       and a.status <> 'cancelled'
        and s.status = 'published'
      order by s.starts_at asc, s.created_at asc`,
     [personId],
@@ -682,6 +746,7 @@ export async function createScheduleAssignment(
 
   try {
     await client.query("begin");
+    await ensureReplacementRequestAssignmentLink(client, schema);
 
     const personResult = await client.query<{ id: string }>(
       `select id
@@ -701,11 +766,17 @@ export async function createScheduleAssignment(
     const slotResult = await client.query<{
       id: string;
       required_count: number;
+      schedule_id: string;
       schedule_status: string;
+      starts_at: Date;
+      ends_at: Date;
     }>(
       `select
          ss.id,
          ss.required_count,
+         s.id as schedule_id,
+         s.starts_at,
+         s.ends_at,
          s.status as schedule_status
        from ${schema}.schedules s
        join ${schema}.schedule_slots ss on ss.schedule_id = s.id
@@ -745,6 +816,22 @@ export async function createScheduleAssignment(
       throw new ScheduleAssignmentError(
         "assignment_already_exists",
         "Person is already assigned to this schedule.",
+      );
+    }
+
+    const hasTimeConflict = await hasOverlappingActiveAssignment(
+      client,
+      schema,
+      input.personId,
+      slot.starts_at,
+      slot.ends_at,
+      slot.schedule_id,
+    );
+
+    if (hasTimeConflict) {
+      throw new ScheduleAssignmentError(
+        "person_unavailable",
+        "Person already has an active assignment in this time window.",
       );
     }
 
@@ -866,6 +953,238 @@ export async function publishSchedule(schema: string, scheduleId: string) {
   return getScheduleDraftById(schema, scheduleId);
 }
 
+export async function inviteReplacementCandidate(
+  schema: string,
+  replacementRequestId: string,
+  personId: string,
+) {
+  const client = await pool.connect();
+  let scheduleId = "";
+
+  try {
+    await client.query("begin");
+    await ensureReplacementRequestAssignmentLink(client, schema);
+
+    const personResult = await client.query<{ id: string }>(
+      `select id
+       from ${schema}.people
+       where id = $1 and status = 'active'
+       limit 1`,
+      [personId],
+    );
+
+    if (!personResult.rows[0]) {
+      throw new ReplacementRequestManagerError(
+        "person_not_found",
+        "Person not found.",
+      );
+    }
+
+    const requestResult = await client.query<{
+      assignment_id: string;
+      ends_at: Date;
+      schedule_id: string;
+      schedule_slot_id: string;
+      schedule_status: string;
+      starts_at: Date;
+      status: string;
+    }>(
+      `select
+         rr.assignment_id,
+         rr.status,
+         a.schedule_slot_id,
+         s.starts_at,
+         s.ends_at,
+         s.id as schedule_id,
+         s.status as schedule_status
+       from ${schema}.replacement_requests rr
+       join ${schema}.assignments a on a.id = rr.assignment_id
+       join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+       join ${schema}.schedules s on s.id = ss.schedule_id
+       where rr.id = $1
+       limit 1`,
+      [replacementRequestId],
+    );
+
+    const replacementRequest = requestResult.rows[0];
+    if (!replacementRequest) {
+      throw new ReplacementRequestManagerError(
+        "replacement_request_not_found",
+        "Replacement request not found.",
+      );
+    }
+
+    scheduleId = replacementRequest.schedule_id;
+
+    if (!["requested", "under_review"].includes(replacementRequest.status)) {
+      throw new ReplacementRequestManagerError(
+        "replacement_request_not_open",
+        "Replacement request is not open.",
+      );
+    }
+
+    if (replacementRequest.schedule_status !== "published") {
+      throw new ReplacementRequestManagerError(
+        "schedule_not_assignable",
+        "Schedule cannot receive replacement candidates.",
+      );
+    }
+
+    const duplicateResult = await client.query<{ id: string }>(
+      `select id
+       from ${schema}.assignments
+       where schedule_slot_id = $1
+         and assignee_type = 'person'
+         and assignee_id = $2
+         and status not in ('cancelled', 'declined')
+       limit 1`,
+      [replacementRequest.schedule_slot_id, personId],
+    );
+
+    if (duplicateResult.rows[0]) {
+      throw new ReplacementRequestManagerError(
+        "assignment_already_exists",
+        "Person is already assigned to this schedule.",
+      );
+    }
+
+    const hasTimeConflict = await hasOverlappingActiveAssignment(
+      client,
+      schema,
+      personId,
+      replacementRequest.starts_at,
+      replacementRequest.ends_at,
+      replacementRequest.schedule_id,
+    );
+
+    if (hasTimeConflict) {
+      throw new ReplacementRequestManagerError(
+        "person_unavailable",
+        "Person already has an active assignment in this time window.",
+      );
+    }
+
+    await client.query(
+      `insert into ${schema}.assignments (
+        schedule_slot_id,
+        assignee_type,
+        assignee_id,
+        status,
+        replacement_request_id
+      )
+      values ($1, 'person', $2, 'invited', $3)`,
+      [replacementRequest.schedule_slot_id, personId, replacementRequestId],
+    );
+
+    await client.query(
+      `update ${schema}.replacement_requests
+       set status = 'waiting_response',
+           updated_at = now()
+       where id = $1`,
+      [replacementRequestId],
+    );
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return getScheduleDraftById(schema, scheduleId);
+}
+
+export async function completeReplacementRequest(
+  schema: string,
+  replacementRequestId: string,
+) {
+  const client = await pool.connect();
+  let scheduleId = "";
+
+  try {
+    await client.query("begin");
+    await ensureReplacementRequestAssignmentLink(client, schema);
+
+    const requestResult = await client.query<{
+      assignment_id: string;
+      schedule_id: string;
+      status: string;
+    }>(
+      `select
+         rr.assignment_id,
+         rr.status,
+         s.id as schedule_id
+       from ${schema}.replacement_requests rr
+       join ${schema}.assignments a on a.id = rr.assignment_id
+       join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+       join ${schema}.schedules s on s.id = ss.schedule_id
+       where rr.id = $1
+       limit 1`,
+      [replacementRequestId],
+    );
+
+    const replacementRequest = requestResult.rows[0];
+    if (!replacementRequest) {
+      throw new ReplacementRequestManagerError(
+        "replacement_request_not_found",
+        "Replacement request not found.",
+      );
+    }
+
+    scheduleId = replacementRequest.schedule_id;
+
+    if (replacementRequest.status !== "accepted") {
+      throw new ReplacementRequestManagerError(
+        "replacement_request_not_open",
+        "Replacement request is not ready to be completed.",
+      );
+    }
+
+    const candidateResult = await client.query<{ id: string }>(
+      `select id
+       from ${schema}.assignments
+       where replacement_request_id = $1
+         and status in ('confirmed', 'externally_confirmed')
+       order by updated_at desc, created_at desc
+       limit 1`,
+      [replacementRequestId],
+    );
+
+    if (!candidateResult.rows[0]) {
+      throw new ReplacementRequestManagerError(
+        "replacement_candidate_not_confirmed",
+        "Replacement candidate has not confirmed yet.",
+      );
+    }
+
+    await client.query(
+      `update ${schema}.assignments
+       set status = 'cancelled',
+           updated_at = now()
+       where id = $1`,
+      [replacementRequest.assignment_id],
+    );
+
+    await client.query(
+      `update ${schema}.replacement_requests
+       set status = 'completed',
+           updated_at = now()
+       where id = $1`,
+      [replacementRequestId],
+    );
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return getScheduleDraftById(schema, scheduleId);
+}
+
 export async function respondToMemberScheduleAssignment(
   schema: string,
   personId: string,
@@ -876,12 +1195,15 @@ export async function respondToMemberScheduleAssignment(
 
   try {
     await client.query("begin");
+    await ensureReplacementRequestAssignmentLink(client, schema);
 
     const assignmentResult = await client.query<{
       id: string;
+      replacement_request_id: string | null;
+      schedule_slot_id: string;
       status: string;
     }>(
-      `select a.id, a.status
+      `select a.id, a.replacement_request_id, a.schedule_slot_id, a.status
        from ${schema}.assignments a
        join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
        join ${schema}.schedules s on s.id = ss.schedule_id
@@ -901,7 +1223,11 @@ export async function respondToMemberScheduleAssignment(
       );
     }
 
-    if (!["invited", "pending", "confirmed", "declined"].includes(assignment.status)) {
+    if (
+      !["invited", "pending", "confirmed", "declined"].includes(
+        assignment.status,
+      )
+    ) {
       throw new MemberScheduleError(
         "assignment_not_actionable",
         "Assignment cannot be answered by the member.",
@@ -922,6 +1248,28 @@ export async function respondToMemberScheduleAssignment(
         assignmentId,
       ],
     );
+
+    if (assignment.replacement_request_id && status === "confirmed") {
+      await client.query(
+        `update ${schema}.replacement_requests
+         set status = 'accepted',
+             updated_at = now()
+         where id = $1
+           and status = 'waiting_response'`,
+        [assignment.replacement_request_id],
+      );
+    }
+
+    if (assignment.replacement_request_id && status === "declined") {
+      await client.query(
+        `update ${schema}.replacement_requests
+         set status = 'requested',
+             updated_at = now()
+         where id = $1
+           and status = 'waiting_response'`,
+        [assignment.replacement_request_id],
+      );
+    }
 
     await client.query("commit");
   } catch (error) {

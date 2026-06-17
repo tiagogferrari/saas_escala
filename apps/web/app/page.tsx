@@ -238,6 +238,55 @@ function countActiveAssignments(schedule: ScheduleDraft) {
   ).length;
 }
 
+function canInviteReplacementCandidate(status: string) {
+  return ["requested", "under_review"].includes(status);
+}
+
+function schedulesOverlap(first: ScheduleDraft, second: ScheduleDraft) {
+  return (
+    new Date(first.startsAt) < new Date(second.endsAt) &&
+    new Date(first.endsAt) > new Date(second.startsAt)
+  );
+}
+
+function personHasActiveOverlap(
+  personId: string,
+  targetSchedule: ScheduleDraft,
+  schedules: ScheduleDraft[],
+) {
+  return schedules.some(
+    (schedule) =>
+      schedule.id !== targetSchedule.id &&
+      ["draft", "published"].includes(schedule.status) &&
+      schedulesOverlap(targetSchedule, schedule) &&
+      schedule.assignments.some(
+        (assignment) =>
+          assignment.assigneeType === "person" &&
+          assignment.assigneeId === personId &&
+          isActiveAssignmentStatus(assignment.status),
+      ),
+  );
+}
+
+function getReplacementCandidatePeople(
+  people: Person[],
+  schedules: ScheduleDraft[],
+  targetSchedule: ScheduleDraft,
+) {
+  const activePeopleInSchedule = new Set(
+    targetSchedule.assignments
+      .filter((assignment) => isActiveAssignmentStatus(assignment.status))
+      .map((assignment) => assignment.assigneeId),
+  );
+
+  return people.filter(
+    (person) =>
+      person.status === "active" &&
+      !activePeopleInSchedule.has(person.id) &&
+      !personHasActiveOverlap(person.id, targetSchedule, schedules),
+  );
+}
+
 export default function HomePage() {
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [dbStatus, setDbStatus] = useState<ApiStatus>("checking");
@@ -278,20 +327,29 @@ export default function HomePage() {
   const [memberSchedules, setMemberSchedules] = useState<MemberSchedule[]>([]);
   const [replacementReasonByAssignment, setReplacementReasonByAssignment] =
     useState<Record<string, string>>({});
+  const [replacementCandidateByRequest, setReplacementCandidateByRequest] =
+    useState<Record<string, string>>({});
 
   const [isSubmittingTenant, setIsSubmittingTenant] = useState(false);
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
   const [isSubmittingLocation, setIsSubmittingLocation] = useState(false);
   const [isSubmittingSchedule, setIsSubmittingSchedule] = useState(false);
   const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
-  const [publishingScheduleId, setPublishingScheduleId] = useState<string | null>(
-    null,
-  );
-  const [isLoadingMemberSchedules, setIsLoadingMemberSchedules] = useState(false);
+  const [publishingScheduleId, setPublishingScheduleId] = useState<
+    string | null
+  >(null);
+  const [isLoadingMemberSchedules, setIsLoadingMemberSchedules] =
+    useState(false);
   const [respondingAssignmentId, setRespondingAssignmentId] = useState<
     string | null
   >(null);
-  const [requestingReplacementAssignmentId, setRequestingReplacementAssignmentId] =
+  const [
+    requestingReplacementAssignmentId,
+    setRequestingReplacementAssignmentId,
+  ] = useState<string | null>(null);
+  const [invitingReplacementRequestId, setInvitingReplacementRequestId] =
+    useState<string | null>(null);
+  const [completingReplacementRequestId, setCompletingReplacementRequestId] =
     useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
@@ -322,7 +380,9 @@ export default function HomePage() {
     }
 
     try {
-      const response = await fetch(`${apiUrl}/health/db`, { cache: "no-store" });
+      const response = await fetch(`${apiUrl}/health/db`, {
+        cache: "no-store",
+      });
       setDbStatus(response.ok ? "online" : "offline");
     } catch {
       setDbStatus("offline");
@@ -657,7 +717,9 @@ export default function HomePage() {
       Number.isNaN(endsAt.getTime()) ||
       startsAt >= endsAt
     ) {
-      setWorkspaceMessage("Confira o horario: o fim precisa ser depois do inicio.");
+      setWorkspaceMessage(
+        "Confira o horario: o fim precisa ser depois do inicio.",
+      );
       return;
     }
 
@@ -708,7 +770,9 @@ export default function HomePage() {
     const personId = assignmentPersonId || people[0]?.id;
 
     if (!scheduleId || !personId) {
-      setWorkspaceMessage("Crie uma escala e cadastre uma pessoa antes de escalar.");
+      setWorkspaceMessage(
+        "Crie uma escala e cadastre uma pessoa antes de escalar.",
+      );
       return;
     }
 
@@ -893,6 +957,113 @@ export default function HomePage() {
     }
   }
 
+  function updateReplacementCandidate(
+    replacementRequestId: string,
+    personId: string,
+  ) {
+    setReplacementCandidateByRequest((currentCandidates) => ({
+      ...currentCandidates,
+      [replacementRequestId]: personId,
+    }));
+  }
+
+  async function inviteReplacementCandidate(replacementRequestId: string) {
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    const personId = replacementCandidateByRequest[replacementRequestId];
+    if (!personId) {
+      setWorkspaceMessage("Escolha uma pessoa disponivel para chamar.");
+      return;
+    }
+
+    setInvitingReplacementRequestId(replacementRequestId);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/replacement-requests/${replacementRequestId}/candidates`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ personId }),
+        },
+      );
+
+      if (response.status === 409 || response.status === 404) {
+        const payload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(
+          payload.message ?? "Nao foi possivel chamar esse substituto.",
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel chamar esse substituto.");
+        return;
+      }
+
+      setReplacementCandidateByRequest((currentCandidates) => {
+        const nextCandidates = { ...currentCandidates };
+        delete nextCandidates[replacementRequestId];
+        return nextCandidates;
+      });
+      setWorkspaceMessage("Substituto convidado.");
+      await loadTenantData(selectedTenantSlug);
+      if (memberPersonId) {
+        await loadMemberSchedules(selectedTenantSlug, memberPersonId);
+      }
+    } catch {
+      setWorkspaceMessage("API indisponivel ao chamar substituto.");
+    } finally {
+      setInvitingReplacementRequestId(null);
+    }
+  }
+
+  async function completeReplacementRequest(replacementRequestId: string) {
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    setCompletingReplacementRequestId(replacementRequestId);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/replacement-requests/${replacementRequestId}/complete`,
+        {
+          method: "POST",
+        },
+      );
+
+      if (response.status === 409 || response.status === 404) {
+        const payload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(
+          payload.message ?? "Nao foi possivel concluir a substituicao.",
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel concluir a substituicao.");
+        return;
+      }
+
+      setWorkspaceMessage("Substituicao concluida.");
+      await loadTenantData(selectedTenantSlug);
+      if (memberPersonId) {
+        await loadMemberSchedules(selectedTenantSlug, memberPersonId);
+      }
+    } catch {
+      setWorkspaceMessage("API indisponivel ao concluir substituicao.");
+    } finally {
+      setCompletingReplacementRequestId(null);
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero">
@@ -1005,7 +1176,9 @@ export default function HomePage() {
                     onClick={() => setSelectedTenantSlug(tenant.slug)}
                     type="button"
                   >
-                    {tenant.slug === selectedTenantSlug ? "Selecionado" : "Abrir"}
+                    {tenant.slug === selectedTenantSlug
+                      ? "Selecionado"
+                      : "Abrir"}
                   </button>
                 </article>
               ))}
@@ -1072,7 +1245,10 @@ export default function HomePage() {
                     placeholder="(18) 99999-9999"
                   />
                 </label>
-                <button className="primary-button" disabled={isSubmittingPerson}>
+                <button
+                  className="primary-button"
+                  disabled={isSubmittingPerson}
+                >
                   {isSubmittingPerson ? "Salvando..." : "Cadastrar pessoa"}
                 </button>
               </form>
@@ -1187,7 +1363,9 @@ export default function HomePage() {
                   <label>
                     Fim
                     <input
-                      onChange={(event) => setScheduleEndsAt(event.target.value)}
+                      onChange={(event) =>
+                        setScheduleEndsAt(event.target.value)
+                      }
                       required
                       type="datetime-local"
                       value={scheduleEndsAt}
@@ -1258,7 +1436,9 @@ export default function HomePage() {
                   Pessoa
                   <select
                     disabled={people.length === 0}
-                    onChange={(event) => setAssignmentPersonId(event.target.value)}
+                    onChange={(event) =>
+                      setAssignmentPersonId(event.target.value)
+                    }
                     required
                     value={assignmentPersonId}
                   >
@@ -1278,7 +1458,9 @@ export default function HomePage() {
                   <select
                     onChange={(event) =>
                       setAssignmentStatus(
-                        event.target.value as "externally_confirmed" | "invited",
+                        event.target.value as
+                          | "externally_confirmed"
+                          | "invited",
                       )
                     }
                     value={assignmentStatus}
@@ -1286,7 +1468,9 @@ export default function HomePage() {
                     <option value="externally_confirmed">
                       Confirmado pelo gestor
                     </option>
-                    <option value="invited">Convidado / aguardando aceite</option>
+                    <option value="invited">
+                      Convidado / aguardando aceite
+                    </option>
                   </select>
                 </label>
 
@@ -1304,8 +1488,15 @@ export default function HomePage() {
             </div>
 
             <SchedulePanel
+              completingReplacementRequestId={completingReplacementRequestId}
+              invitingReplacementRequestId={invitingReplacementRequestId}
+              onCompleteReplacementRequest={completeReplacementRequest}
+              onInviteReplacementCandidate={inviteReplacementCandidate}
               onPublishSchedule={publishSchedule}
+              onReplacementCandidateChange={updateReplacementCandidate}
+              people={people}
               publishingScheduleId={publishingScheduleId}
+              replacementCandidateByRequest={replacementCandidateByRequest}
               schedules={schedules}
             />
 
@@ -1319,7 +1510,9 @@ export default function HomePage() {
               onRespond={respondToMemberSchedule}
               people={people}
               replacementReasonByAssignment={replacementReasonByAssignment}
-              requestingReplacementAssignmentId={requestingReplacementAssignmentId}
+              requestingReplacementAssignmentId={
+                requestingReplacementAssignmentId
+              }
               respondingAssignmentId={respondingAssignmentId}
               selectedMemberId={memberPersonId}
             />
@@ -1373,12 +1566,29 @@ function StatusCard({ label, status }: { label: string; status: ApiStatus }) {
 }
 
 function SchedulePanel({
+  completingReplacementRequestId,
+  invitingReplacementRequestId,
+  onCompleteReplacementRequest,
+  onInviteReplacementCandidate,
   onPublishSchedule,
+  onReplacementCandidateChange,
+  people,
   publishingScheduleId,
+  replacementCandidateByRequest,
   schedules,
 }: {
+  completingReplacementRequestId: string | null;
+  invitingReplacementRequestId: string | null;
+  onCompleteReplacementRequest: (replacementRequestId: string) => Promise<void>;
+  onInviteReplacementCandidate: (replacementRequestId: string) => Promise<void>;
   onPublishSchedule: (scheduleId: string) => Promise<void>;
+  onReplacementCandidateChange: (
+    replacementRequestId: string,
+    personId: string,
+  ) => void;
+  people: Person[];
   publishingScheduleId: string | null;
+  replacementCandidateByRequest: Record<string, string>;
   schedules: ScheduleDraft[];
 }) {
   return (
@@ -1400,10 +1610,18 @@ function SchedulePanel({
         <div className="schedule-list">
           {schedules.map((schedule) => (
             <ScheduleCard
+              completingReplacementRequestId={completingReplacementRequestId}
+              invitingReplacementRequestId={invitingReplacementRequestId}
               key={schedule.id}
+              onCompleteReplacementRequest={onCompleteReplacementRequest}
+              onInviteReplacementCandidate={onInviteReplacementCandidate}
               onPublishSchedule={onPublishSchedule}
+              onReplacementCandidateChange={onReplacementCandidateChange}
+              people={people}
               publishingScheduleId={publishingScheduleId}
+              replacementCandidateByRequest={replacementCandidateByRequest}
               schedule={schedule}
+              schedules={schedules}
             />
           ))}
         </div>
@@ -1413,15 +1631,39 @@ function SchedulePanel({
 }
 
 function ScheduleCard({
+  completingReplacementRequestId,
+  invitingReplacementRequestId,
+  onCompleteReplacementRequest,
+  onInviteReplacementCandidate,
   onPublishSchedule,
+  onReplacementCandidateChange,
+  people,
   publishingScheduleId,
+  replacementCandidateByRequest,
   schedule,
+  schedules,
 }: {
+  completingReplacementRequestId: string | null;
+  invitingReplacementRequestId: string | null;
+  onCompleteReplacementRequest: (replacementRequestId: string) => Promise<void>;
+  onInviteReplacementCandidate: (replacementRequestId: string) => Promise<void>;
   onPublishSchedule: (scheduleId: string) => Promise<void>;
+  onReplacementCandidateChange: (
+    replacementRequestId: string,
+    personId: string,
+  ) => void;
+  people: Person[];
   publishingScheduleId: string | null;
+  replacementCandidateByRequest: Record<string, string>;
   schedule: ScheduleDraft;
+  schedules: ScheduleDraft[];
 }) {
   const activeAssignmentCount = countActiveAssignments(schedule);
+  const replacementCandidatePeople = getReplacementCandidatePeople(
+    people,
+    schedules,
+    schedule,
+  );
 
   return (
     <article className="schedule-card">
@@ -1464,24 +1706,121 @@ function ScheduleCard({
         <div className="assignment-empty">Nenhuma pessoa escalada.</div>
       ) : (
         <div className="assignment-list">
-          {schedule.assignments.map((assignment) => (
-            <div className="assignment-item" key={assignment.id}>
-              <div>
-                <strong>{assignment.assigneeName}</strong>
-                {assignment.replacementRequest ? (
-                  <small>
-                    {replacementRequestStatusLabel(
-                      assignment.replacementRequest.status,
-                    )}
-                    {assignment.replacementRequest.reason
-                      ? `: ${assignment.replacementRequest.reason}`
-                      : ""}
-                  </small>
-                ) : null}
+          {schedule.assignments.map((assignment) => {
+            const replacementRequest = assignment.replacementRequest;
+            const selectedCandidateId = replacementRequest
+              ? (replacementCandidateByRequest[replacementRequest.id] ?? "")
+              : "";
+            const selectedCandidateIsAvailable =
+              replacementCandidatePeople.some(
+                (person) => person.id === selectedCandidateId,
+              );
+
+            return (
+              <div className="assignment-item" key={assignment.id}>
+                <div className="assignment-detail">
+                  <div>
+                    <strong>{assignment.assigneeName}</strong>
+                    {replacementRequest ? (
+                      <small>
+                        {replacementRequestStatusLabel(
+                          replacementRequest.status,
+                        )}
+                        {replacementRequest.reason
+                          ? `: ${replacementRequest.reason}`
+                          : ""}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  {replacementRequest &&
+                  canInviteReplacementCandidate(replacementRequest.status) ? (
+                    <div className="replacement-manager-actions">
+                      <label>
+                        Chamar substituto
+                        <select
+                          disabled={
+                            replacementCandidatePeople.length === 0 ||
+                            invitingReplacementRequestId ===
+                              replacementRequest.id
+                          }
+                          onChange={(event) =>
+                            onReplacementCandidateChange(
+                              replacementRequest.id,
+                              event.target.value,
+                            )
+                          }
+                          value={
+                            selectedCandidateIsAvailable
+                              ? selectedCandidateId
+                              : ""
+                          }
+                        >
+                          <option value="">
+                            Selecione uma pessoa disponivel
+                          </option>
+                          {replacementCandidatePeople.map((person) => (
+                            <option key={person.id} value={person.id}>
+                              {person.displayName}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="secondary-button"
+                        disabled={
+                          !selectedCandidateIsAvailable ||
+                          invitingReplacementRequestId === replacementRequest.id
+                        }
+                        onClick={() =>
+                          void onInviteReplacementCandidate(
+                            replacementRequest.id,
+                          )
+                        }
+                        type="button"
+                      >
+                        {invitingReplacementRequestId === replacementRequest.id
+                          ? "Chamando..."
+                          : "Chamar"}
+                      </button>
+                      {replacementCandidatePeople.length === 0 ? (
+                        <p>Nenhuma pessoa disponivel nesse horario.</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {replacementRequest &&
+                  replacementRequest.status === "accepted" ? (
+                    <div className="replacement-manager-actions">
+                      <p>
+                        O substituto aceitou. Conclua a troca para remover a
+                        pessoa original da escala.
+                      </p>
+                      <button
+                        className="secondary-button"
+                        disabled={
+                          completingReplacementRequestId ===
+                          replacementRequest.id
+                        }
+                        onClick={() =>
+                          void onCompleteReplacementRequest(
+                            replacementRequest.id,
+                          )
+                        }
+                        type="button"
+                      >
+                        {completingReplacementRequestId ===
+                        replacementRequest.id
+                          ? "Concluindo..."
+                          : "Concluir troca"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+                <span>{assignmentStatusLabel(assignment.status)}</span>
               </div>
-              <span>{assignmentStatusLabel(assignment.status)}</span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </article>
@@ -1557,9 +1896,7 @@ function MemberPortal({
       ) : memberSchedules.length === 0 ? (
         <div className="empty-state">
           <strong>Nenhuma escala publicada para essa pessoa.</strong>
-          <p>
-            Publique uma escala com essa pessoa para aparecer nesta visao.
-          </p>
+          <p>Publique uma escala com essa pessoa para aparecer nesta visao.</p>
         </div>
       ) : (
         <div className="member-schedule-list">
@@ -1575,7 +1912,10 @@ function MemberPortal({
               ) && !replacementRequest;
 
             return (
-              <article className="member-schedule-card" key={memberSchedule.assignment.id}>
+              <article
+                className="member-schedule-card"
+                key={memberSchedule.assignment.id}
+              >
                 <header>
                   <div>
                     <strong>{memberSchedule.schedule.title}</strong>
@@ -1593,7 +1933,9 @@ function MemberPortal({
 
                 <div className="schedule-meta">
                   <span>{memberSchedule.schedule.slot.function.name}</span>
-                  <span>{scheduleStatusLabel(memberSchedule.schedule.status)}</span>
+                  <span>
+                    {scheduleStatusLabel(memberSchedule.schedule.status)}
+                  </span>
                 </div>
 
                 {memberSchedule.companions.length === 0 ? (
@@ -1605,7 +1947,9 @@ function MemberPortal({
                     <span>Junto com</span>
                     <div>
                       {memberSchedule.companions.map((companion) => (
-                        <strong key={companion.id}>{companion.assigneeName}</strong>
+                        <strong key={companion.id}>
+                          {companion.assigneeName}
+                        </strong>
                       ))}
                     </div>
                   </div>
@@ -1628,9 +1972,14 @@ function MemberPortal({
                   <div className="inline-actions">
                     <button
                       className="secondary-button"
-                      disabled={respondingAssignmentId === memberSchedule.assignment.id}
+                      disabled={
+                        respondingAssignmentId === memberSchedule.assignment.id
+                      }
                       onClick={() =>
-                        void onRespond(memberSchedule.assignment.id, "confirmed")
+                        void onRespond(
+                          memberSchedule.assignment.id,
+                          "confirmed",
+                        )
                       }
                       type="button"
                     >
@@ -1638,7 +1987,9 @@ function MemberPortal({
                     </button>
                     <button
                       className="danger-button"
-                      disabled={respondingAssignmentId === memberSchedule.assignment.id}
+                      disabled={
+                        respondingAssignmentId === memberSchedule.assignment.id
+                      }
                       onClick={() =>
                         void onRespond(memberSchedule.assignment.id, "declined")
                       }

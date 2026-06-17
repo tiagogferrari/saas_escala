@@ -26,11 +26,20 @@ body {
 
 body {
   background:
-    radial-gradient(circle at top left, rgb(37 99 235 / 0.14), transparent 34rem),
+    radial-gradient(
+      circle at top left,
+      rgb(37 99 235 / 0.14),
+      transparent 34rem
+    ),
     var(--color-surface);
   color: var(--color-text);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
     sans-serif;
 }
 
@@ -534,7 +543,7 @@ dd {
 }
 
 .assignment-item {
-  align-items: center;
+  align-items: start;
   background: #fff;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
@@ -542,6 +551,12 @@ dd {
   gap: 12px;
   justify-content: space-between;
   padding: 12px;
+}
+
+.assignment-detail {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
 }
 
 .assignment-item strong {
@@ -561,6 +576,30 @@ dd {
   font-size: 0.85rem;
   font-weight: 700;
   text-align: right;
+}
+
+.replacement-manager-actions {
+  align-items: end;
+  background: #f8fafc;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  max-width: 520px;
+  padding: 10px;
+}
+
+.replacement-manager-actions label {
+  margin: 0;
+}
+
+.replacement-manager-actions p {
+  color: var(--color-muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .member-portal {
@@ -701,6 +740,20 @@ dd {
   .workspace-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .assignment-item,
+  .replacement-manager-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .assignment-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .assignment-item span {
+    text-align: left;
   }
 
   dl {

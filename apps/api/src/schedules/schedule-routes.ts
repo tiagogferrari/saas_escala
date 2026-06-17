@@ -2,14 +2,17 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { resolveTenantContext } from "../tenant-context/tenant-context";
 import {
+  completeReplacementRequest,
   createReplacementRequest,
   createScheduleAssignment,
   createScheduleDraft,
+  inviteReplacementCandidate,
   listMemberSchedules,
   listScheduleAssignments,
   listScheduleDrafts,
   MemberScheduleError,
   publishSchedule,
+  ReplacementRequestManagerError,
   respondToMemberScheduleAssignment,
   ScheduleAssignmentError,
   SchedulePublicationError,
@@ -29,6 +32,10 @@ const memberParamsSchema = tenantParamsSchema.extend({
 
 const memberResponseParamsSchema = memberParamsSchema.extend({
   assignmentId: z.string().uuid(),
+});
+
+const replacementRequestParamsSchema = tenantParamsSchema.extend({
+  replacementRequestId: z.string().uuid(),
 });
 
 const optionalTextSchema = z
@@ -57,9 +64,9 @@ const createScheduleSchema = z
 
 const createAssignmentSchema = z.object({
   personId: z.string().uuid(),
-  status: z.enum(["invited", "externally_confirmed"]).default(
-    "externally_confirmed",
-  ),
+  status: z
+    .enum(["invited", "externally_confirmed"])
+    .default("externally_confirmed"),
 });
 
 const respondAssignmentSchema = z.object({
@@ -77,7 +84,14 @@ const createReplacementRequestSchema = z.object({
   urgent: z.boolean().optional().default(false),
 });
 
-function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply) {
+const inviteReplacementCandidateSchema = z.object({
+  personId: z.string().uuid(),
+});
+
+function sendAssignmentError(
+  error: ScheduleAssignmentError,
+  reply: FastifyReply,
+) {
   if (error.code === "person_not_found") {
     return reply.code(404).send({
       error: error.code,
@@ -99,6 +113,13 @@ function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply
     });
   }
 
+  if (error.code === "person_unavailable") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Pessoa ja esta escalada em outro horario conflitante.",
+    });
+  }
+
   if (error.code === "schedule_not_assignable") {
     return reply.code(409).send({
       error: error.code,
@@ -112,7 +133,62 @@ function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply
   });
 }
 
-function sendMemberScheduleError(error: MemberScheduleError, reply: FastifyReply) {
+function sendReplacementRequestManagerError(
+  error: ReplacementRequestManagerError,
+  reply: FastifyReply,
+) {
+  if (error.code === "person_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Pessoa nao encontrada.",
+    });
+  }
+
+  if (error.code === "replacement_request_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Pedido de substituicao nao encontrado.",
+    });
+  }
+
+  if (error.code === "assignment_already_exists") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Pessoa ja esta nessa escala.",
+    });
+  }
+
+  if (error.code === "replacement_candidate_not_confirmed") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Ainda nao existe substituto confirmado para concluir.",
+    });
+  }
+
+  if (error.code === "person_unavailable") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Pessoa ja esta escalada em outro horario conflitante.",
+    });
+  }
+
+  if (error.code === "replacement_request_not_open") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Esse pedido de substituicao nao esta aberto.",
+    });
+  }
+
+  return reply.code(409).send({
+    error: error.code,
+    message: "Essa escala nao pode receber substituto.",
+  });
+}
+
+function sendMemberScheduleError(
+  error: MemberScheduleError,
+  reply: FastifyReply,
+) {
   if (error.code === "person_not_found") {
     return reply.code(404).send({
       error: error.code,
@@ -140,7 +216,10 @@ function sendMemberScheduleError(error: MemberScheduleError, reply: FastifyReply
   });
 }
 
-function sendPublicationError(error: SchedulePublicationError, reply: FastifyReply) {
+function sendPublicationError(
+  error: SchedulePublicationError,
+  reply: FastifyReply,
+) {
   if (error.code === "schedule_not_found") {
     return reply.code(404).send({
       error: error.code,
@@ -192,7 +271,10 @@ export async function scheduleRoutes(app: FastifyInstance) {
       }
 
       try {
-        const schedule = await publishSchedule(context.schema, params.scheduleId);
+        const schedule = await publishSchedule(
+          context.schema,
+          params.scheduleId,
+        );
 
         return {
           data: schedule,
@@ -290,6 +372,61 @@ export async function scheduleRoutes(app: FastifyInstance) {
     },
   );
 
+  app.post(
+    "/tenants/:tenantSlug/replacement-requests/:replacementRequestId/candidates",
+    async (request, reply) => {
+      const params = replacementRequestParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = inviteReplacementCandidateSchema.parse(request.body);
+
+      try {
+        return {
+          data: await inviteReplacementCandidate(
+            context.schema,
+            params.replacementRequestId,
+            input.personId,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof ReplacementRequestManagerError) {
+          return sendReplacementRequestManagerError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/tenants/:tenantSlug/replacement-requests/:replacementRequestId/complete",
+    async (request, reply) => {
+      const params = replacementRequestParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      try {
+        return {
+          data: await completeReplacementRequest(
+            context.schema,
+            params.replacementRequestId,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof ReplacementRequestManagerError) {
+          return sendReplacementRequestManagerError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
   app.get(
     "/tenants/:tenantSlug/schedules/:scheduleId/assignments",
     async (request, reply) => {
@@ -301,7 +438,10 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
       try {
         return {
-          data: await listScheduleAssignments(context.schema, params.scheduleId),
+          data: await listScheduleAssignments(
+            context.schema,
+            params.scheduleId,
+          ),
         };
       } catch (error) {
         if (error instanceof ScheduleAssignmentError) {

@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS ${schema}.replacement_requests (
   )
 );
 
+ALTER TABLE ${schema}.assignments
+  ADD COLUMN IF NOT EXISTS replacement_request_id uuid REFERENCES ${schema}.replacement_requests (id);
+
+CREATE INDEX IF NOT EXISTS assignments_replacement_request_idx
+  ON ${schema}.assignments (replacement_request_id);
+
 CREATE TABLE IF NOT EXISTS ${schema}.attendance_records (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   assignment_id uuid NOT NULL REFERENCES ${schema}.assignments (id),
