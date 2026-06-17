@@ -87,10 +87,10 @@ function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply
     });
   }
 
-  if (error.code === "schedule_not_draft") {
+  if (error.code === "schedule_not_assignable") {
     return reply.code(409).send({
       error: error.code,
-      message: "Apenas escalas em rascunho podem receber novas pessoas.",
+      message: "Essa escala nao pode receber novas pessoas.",
     });
   }
 

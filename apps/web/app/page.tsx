@@ -262,7 +262,10 @@ export default function HomePage() {
     [selectedTenantSlug, tenants],
   );
   const assignableSchedules = useMemo(
-    () => schedules.filter((schedule) => schedule.status === "draft"),
+    () =>
+      schedules.filter((schedule) =>
+        ["draft", "published"].includes(schedule.status),
+      ),
     [schedules],
   );
 
@@ -1139,11 +1142,12 @@ export default function HomePage() {
                     value={assignmentScheduleId}
                   >
                     {assignableSchedules.length === 0 ? (
-                      <option value="">Crie uma escala rascunho</option>
+                      <option value="">Crie uma escala</option>
                     ) : null}
                     {assignableSchedules.map((schedule) => (
                       <option key={schedule.id} value={schedule.id}>
-                        {schedule.title} - {formatDate(schedule.startsAt)}
+                        {schedule.title} - {formatDate(schedule.startsAt)} -{" "}
+                        {scheduleStatusLabel(schedule.status)}
                       </option>
                     ))}
                   </select>

@@ -130,7 +130,7 @@ type MemberScheduleRow = {
 type ScheduleAssignmentErrorCode =
   | "assignment_already_exists"
   | "person_not_found"
-  | "schedule_not_draft"
+  | "schedule_not_assignable"
   | "schedule_not_found"
   | "slot_full";
 
@@ -609,10 +609,10 @@ export async function createScheduleAssignment(
       );
     }
 
-    if (slot.schedule_status !== "draft") {
+    if (!["draft", "published"].includes(slot.schedule_status)) {
       throw new ScheduleAssignmentError(
-        "schedule_not_draft",
-        "Only draft schedules can receive assignments.",
+        "schedule_not_assignable",
+        "Schedule cannot receive assignments.",
       );
     }
 
