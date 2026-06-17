@@ -10,7 +10,19 @@ export type ScheduleAssignment = {
   status: string;
   confirmedAt: string | null;
   confirmationSource: string | null;
+  replacementRequest: ReplacementRequest | null;
   createdAt: string;
+};
+
+export type ReplacementRequest = {
+  id: string;
+  assignmentId: string;
+  requestedByPersonId: string;
+  status: string;
+  reason: string | null;
+  urgent: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ScheduleDraft = {
@@ -77,6 +89,11 @@ export type CreateScheduleAssignmentInput = {
   status: "invited" | "externally_confirmed";
 };
 
+export type CreateReplacementRequestInput = {
+  reason?: string | null;
+  urgent?: boolean;
+};
+
 type ScheduleDraftRow = {
   schedule_id: string;
   title: string;
@@ -104,6 +121,13 @@ type ScheduleAssignmentRow = {
   confirmed_at: Date | null;
   confirmation_source: string | null;
   created_at: Date;
+  replacement_request_id: string | null;
+  replacement_requested_by_person_id: string | null;
+  replacement_request_status: string | null;
+  replacement_request_reason: string | null;
+  replacement_request_urgent: boolean | null;
+  replacement_request_created_at: Date | null;
+  replacement_request_updated_at: Date | null;
 };
 
 type MemberScheduleRow = {
@@ -125,6 +149,13 @@ type MemberScheduleRow = {
   function_id: string;
   function_name: string;
   required_count: number;
+  replacement_request_id: string | null;
+  replacement_requested_by_person_id: string | null;
+  replacement_request_status: string | null;
+  replacement_request_reason: string | null;
+  replacement_request_urgent: boolean | null;
+  replacement_request_created_at: Date | null;
+  replacement_request_updated_at: Date | null;
 };
 
 type ScheduleAssignmentErrorCode =
@@ -141,7 +172,8 @@ type SchedulePublicationErrorCode =
 type MemberScheduleErrorCode =
   | "assignment_not_actionable"
   | "assignment_not_found"
-  | "person_not_found";
+  | "person_not_found"
+  | "replacement_request_already_exists";
 
 export class ScheduleAssignmentError extends Error {
   constructor(
@@ -210,6 +242,16 @@ function mapMemberSchedule(
       status: row.assignment_status,
       confirmedAt: row.assignment_confirmed_at?.toISOString() ?? null,
       confirmationSource: row.assignment_confirmation_source,
+      replacementRequest: mapReplacementRequest({
+        id: row.replacement_request_id,
+        assignment_id: row.assignment_id,
+        requested_by_person_id: row.replacement_requested_by_person_id,
+        status: row.replacement_request_status,
+        reason: row.replacement_request_reason,
+        urgent: row.replacement_request_urgent,
+        created_at: row.replacement_request_created_at,
+        updated_at: row.replacement_request_updated_at,
+      }),
       createdAt: row.assignment_created_at.toISOString(),
     },
     schedule: {
@@ -235,6 +277,32 @@ function mapMemberSchedule(
   };
 }
 
+function mapReplacementRequest(row: {
+  id: string | null;
+  assignment_id: string;
+  requested_by_person_id: string | null;
+  status: string | null;
+  reason: string | null;
+  urgent: boolean | null;
+  created_at: Date | null;
+  updated_at: Date | null;
+}): ReplacementRequest | null {
+  if (!row.id || !row.requested_by_person_id || !row.status) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    assignmentId: row.assignment_id,
+    requestedByPersonId: row.requested_by_person_id,
+    status: row.status,
+    reason: row.reason,
+    urgent: row.urgent ?? false,
+    createdAt: row.created_at?.toISOString() ?? new Date(0).toISOString(),
+    updatedAt: row.updated_at?.toISOString() ?? new Date(0).toISOString(),
+  };
+}
+
 function mapScheduleAssignment(row: ScheduleAssignmentRow): ScheduleAssignment {
   return {
     id: row.id,
@@ -245,6 +313,16 @@ function mapScheduleAssignment(row: ScheduleAssignmentRow): ScheduleAssignment {
     status: row.status,
     confirmedAt: row.confirmed_at?.toISOString() ?? null,
     confirmationSource: row.confirmation_source,
+    replacementRequest: mapReplacementRequest({
+      id: row.replacement_request_id,
+      assignment_id: row.id,
+      requested_by_person_id: row.replacement_requested_by_person_id,
+      status: row.replacement_request_status,
+      reason: row.replacement_request_reason,
+      urgent: row.replacement_request_urgent,
+      created_at: row.replacement_request_created_at,
+      updated_at: row.replacement_request_updated_at,
+    }),
     createdAt: row.created_at.toISOString(),
   };
 }
@@ -277,8 +355,34 @@ select
   a.status,
   a.confirmed_at,
   a.confirmation_source,
-  a.created_at
+  a.created_at,
+  rr.id as replacement_request_id,
+  rr.requested_by_person_id as replacement_requested_by_person_id,
+  rr.status as replacement_request_status,
+  rr.reason as replacement_request_reason,
+  rr.urgent as replacement_request_urgent,
+  rr.created_at as replacement_request_created_at,
+  rr.updated_at as replacement_request_updated_at
 `;
+
+function replacementRequestJoin(schema: string) {
+  return `
+     left join lateral (
+       select
+         rr.id,
+         rr.requested_by_person_id,
+         rr.status,
+         rr.reason,
+         rr.urgent,
+         rr.created_at,
+         rr.updated_at
+       from ${schema}.replacement_requests rr
+       where rr.assignment_id = a.id
+         and rr.status in ('requested', 'under_review', 'waiting_response', 'accepted')
+       order by rr.created_at desc
+       limit 1
+     ) rr on true`;
+}
 
 async function listAssignmentsBySlotIds(schema: string, slotIds: string[]) {
   const assignmentsBySlot = new Map<string, ScheduleAssignment[]>();
@@ -294,6 +398,7 @@ async function listAssignmentsBySlotIds(schema: string, slotIds: string[]) {
        on a.assignee_type = 'person' and p.id = a.assignee_id
      left join ${schema}.groups g
        on a.assignee_type = 'group' and g.id = a.assignee_id
+     ${replacementRequestJoin(schema)}
      where a.schedule_slot_id = any($1::uuid[])
      order by a.created_at asc`,
     [slotIds],
@@ -321,6 +426,7 @@ async function findAssignmentById(
        on a.assignee_type = 'person' and p.id = a.assignee_id
      left join ${schema}.groups g
        on a.assignee_type = 'group' and g.id = a.assignee_id
+     ${replacementRequestJoin(schema)}
      where a.id = $1
      limit 1`,
     [assignmentId],
@@ -471,13 +577,21 @@ export async function listMemberSchedules(schema: string, personId: string) {
        ss.id as slot_id,
        f.id as function_id,
        f.name as function_name,
-       ss.required_count
+       ss.required_count,
+       rr.id as replacement_request_id,
+       rr.requested_by_person_id as replacement_requested_by_person_id,
+       rr.status as replacement_request_status,
+       rr.reason as replacement_request_reason,
+       rr.urgent as replacement_request_urgent,
+       rr.created_at as replacement_request_created_at,
+       rr.updated_at as replacement_request_updated_at
      from ${schema}.assignments a
      join ${schema}.people p on p.id = a.assignee_id
      join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
      join ${schema}.schedules s on s.id = ss.schedule_id
      join ${schema}.locations l on l.id = s.location_id
      join ${schema}.functions f on f.id = ss.function_id
+     ${replacementRequestJoin(schema)}
      where a.assignee_type = 'person'
        and a.assignee_id = $1
        and s.status = 'published'
@@ -807,6 +921,86 @@ export async function respondToMemberScheduleAssignment(
         status === "confirmed" ? "member" : null,
         assignmentId,
       ],
+    );
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return listMemberSchedules(schema, personId);
+}
+
+export async function createReplacementRequest(
+  schema: string,
+  personId: string,
+  assignmentId: string,
+  input: CreateReplacementRequestInput,
+) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("begin");
+
+    const assignmentResult = await client.query<{
+      id: string;
+      status: string;
+    }>(
+      `select a.id, a.status
+       from ${schema}.assignments a
+       join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+       join ${schema}.schedules s on s.id = ss.schedule_id
+       where a.id = $1
+         and a.assignee_type = 'person'
+         and a.assignee_id = $2
+         and s.status = 'published'
+       limit 1`,
+      [assignmentId, personId],
+    );
+
+    const assignment = assignmentResult.rows[0];
+    if (!assignment) {
+      throw new MemberScheduleError(
+        "assignment_not_found",
+        "Assignment not found.",
+      );
+    }
+
+    if (!["confirmed", "externally_confirmed"].includes(assignment.status)) {
+      throw new MemberScheduleError(
+        "assignment_not_actionable",
+        "Assignment cannot request replacement.",
+      );
+    }
+
+    const existingRequestResult = await client.query<{ id: string }>(
+      `select id
+       from ${schema}.replacement_requests
+       where assignment_id = $1
+         and status in ('requested', 'under_review', 'waiting_response', 'accepted')
+       limit 1`,
+      [assignmentId],
+    );
+
+    if (existingRequestResult.rows[0]) {
+      throw new MemberScheduleError(
+        "replacement_request_already_exists",
+        "Replacement request already exists.",
+      );
+    }
+
+    await client.query(
+      `insert into ${schema}.replacement_requests (
+         assignment_id,
+         requested_by_person_id,
+         reason,
+         urgent
+       )
+       values ($1, $2, $3, $4)`,
+      [assignmentId, personId, input.reason ?? null, input.urgent ?? false],
     );
 
     await client.query("commit");

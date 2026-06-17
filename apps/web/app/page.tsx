@@ -38,6 +38,17 @@ type ScheduleFunction = {
   createdAt: string;
 };
 
+type ReplacementRequest = {
+  id: string;
+  assignmentId: string;
+  requestedByPersonId: string;
+  status: string;
+  reason: string | null;
+  urgent: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type ScheduleAssignment = {
   id: string;
   scheduleSlotId: string;
@@ -47,6 +58,7 @@ type ScheduleAssignment = {
   status: string;
   confirmedAt: string | null;
   confirmationSource: string | null;
+  replacementRequest: ReplacementRequest | null;
   createdAt: string;
 };
 
@@ -186,6 +198,34 @@ function assignmentStatusLabel(status: string) {
   return status;
 }
 
+function replacementRequestStatusLabel(status: string) {
+  if (status === "requested") {
+    return "Substituicao solicitada";
+  }
+
+  if (status === "under_review") {
+    return "Em analise";
+  }
+
+  if (status === "waiting_response") {
+    return "Aguardando substituto";
+  }
+
+  if (status === "accepted") {
+    return "Substituto aceito";
+  }
+
+  if (status === "declined") {
+    return "Pedido recusado";
+  }
+
+  if (status === "completed") {
+    return "Substituicao concluida";
+  }
+
+  return status;
+}
+
 function isActiveAssignmentStatus(status: string) {
   return ["invited", "pending", "confirmed", "externally_confirmed"].includes(
     status,
@@ -236,6 +276,8 @@ export default function HomePage() {
   >("externally_confirmed");
   const [memberPersonId, setMemberPersonId] = useState("");
   const [memberSchedules, setMemberSchedules] = useState<MemberSchedule[]>([]);
+  const [replacementReasonByAssignment, setReplacementReasonByAssignment] =
+    useState<Record<string, string>>({});
 
   const [isSubmittingTenant, setIsSubmittingTenant] = useState(false);
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
@@ -249,6 +291,8 @@ export default function HomePage() {
   const [respondingAssignmentId, setRespondingAssignmentId] = useState<
     string | null
   >(null);
+  const [requestingReplacementAssignmentId, setRequestingReplacementAssignmentId] =
+    useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
   const [memberMessage, setMemberMessage] = useState<string | null>(null);
@@ -792,6 +836,63 @@ export default function HomePage() {
     }
   }
 
+  function updateReplacementReason(assignmentId: string, reason: string) {
+    setReplacementReasonByAssignment((currentReasons) => ({
+      ...currentReasons,
+      [assignmentId]: reason,
+    }));
+  }
+
+  async function requestReplacement(assignmentId: string) {
+    if (!selectedTenantSlug || !memberPersonId) {
+      return;
+    }
+
+    setRequestingReplacementAssignmentId(assignmentId);
+    setMemberMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/replacement-requests`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            reason: replacementReasonByAssignment[assignmentId] ?? "",
+          }),
+        },
+      );
+
+      if (response.status === 409 || response.status === 404) {
+        const payload = (await response.json()) as { message?: string };
+        setMemberMessage(
+          payload.message ?? "Nao foi possivel pedir substituicao.",
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        setMemberMessage("Nao foi possivel pedir substituicao.");
+        return;
+      }
+
+      const payload = (await response.json()) as { data: MemberSchedule[] };
+      setMemberSchedules(payload.data);
+      setReplacementReasonByAssignment((currentReasons) => ({
+        ...currentReasons,
+        [assignmentId]: "",
+      }));
+      setMemberMessage("Pedido de substituicao enviado.");
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setMemberMessage("API indisponivel ao pedir substituicao.");
+    } finally {
+      setRequestingReplacementAssignmentId(null);
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero">
@@ -1213,8 +1314,12 @@ export default function HomePage() {
               memberMessage={memberMessage}
               memberSchedules={memberSchedules}
               onMemberChange={setMemberPersonId}
+              onReplacementReasonChange={updateReplacementReason}
+              onRequestReplacement={requestReplacement}
               onRespond={respondToMemberSchedule}
               people={people}
+              replacementReasonByAssignment={replacementReasonByAssignment}
+              requestingReplacementAssignmentId={requestingReplacementAssignmentId}
               respondingAssignmentId={respondingAssignmentId}
               selectedMemberId={memberPersonId}
             />
@@ -1361,7 +1466,19 @@ function ScheduleCard({
         <div className="assignment-list">
           {schedule.assignments.map((assignment) => (
             <div className="assignment-item" key={assignment.id}>
-              <strong>{assignment.assigneeName}</strong>
+              <div>
+                <strong>{assignment.assigneeName}</strong>
+                {assignment.replacementRequest ? (
+                  <small>
+                    {replacementRequestStatusLabel(
+                      assignment.replacementRequest.status,
+                    )}
+                    {assignment.replacementRequest.reason
+                      ? `: ${assignment.replacementRequest.reason}`
+                      : ""}
+                  </small>
+                ) : null}
+              </div>
               <span>{assignmentStatusLabel(assignment.status)}</span>
             </div>
           ))}
@@ -1376,8 +1493,12 @@ function MemberPortal({
   memberMessage,
   memberSchedules,
   onMemberChange,
+  onReplacementReasonChange,
+  onRequestReplacement,
   onRespond,
   people,
+  replacementReasonByAssignment,
+  requestingReplacementAssignmentId,
   respondingAssignmentId,
   selectedMemberId,
 }: {
@@ -1385,11 +1506,15 @@ function MemberPortal({
   memberMessage: string | null;
   memberSchedules: MemberSchedule[];
   onMemberChange: (personId: string) => void;
+  onReplacementReasonChange: (assignmentId: string, reason: string) => void;
+  onRequestReplacement: (assignmentId: string) => Promise<void>;
   onRespond: (
     assignmentId: string,
     status: "confirmed" | "declined",
   ) => Promise<void>;
   people: Person[];
+  replacementReasonByAssignment: Record<string, string>;
+  requestingReplacementAssignmentId: string | null;
   respondingAssignmentId: string | null;
   selectedMemberId: string;
 }) {
@@ -1442,6 +1567,12 @@ function MemberPortal({
             const canRespond = ["invited", "pending"].includes(
               memberSchedule.assignment.status,
             );
+            const replacementRequest =
+              memberSchedule.assignment.replacementRequest;
+            const canRequestReplacement =
+              ["confirmed", "externally_confirmed"].includes(
+                memberSchedule.assignment.status,
+              ) && !replacementRequest;
 
             return (
               <article className="member-schedule-card" key={memberSchedule.assignment.id}>
@@ -1480,6 +1611,19 @@ function MemberPortal({
                   </div>
                 )}
 
+                {replacementRequest ? (
+                  <div className="replacement-request-box">
+                    <strong>
+                      {replacementRequestStatusLabel(replacementRequest.status)}
+                    </strong>
+                    {replacementRequest.reason ? (
+                      <span>{replacementRequest.reason}</span>
+                    ) : (
+                      <span>Sem motivo informado.</span>
+                    )}
+                  </div>
+                ) : null}
+
                 {canRespond ? (
                   <div className="inline-actions">
                     <button
@@ -1501,6 +1645,45 @@ function MemberPortal({
                       type="button"
                     >
                       Recusar
+                    </button>
+                  </div>
+                ) : null}
+
+                {canRequestReplacement ? (
+                  <div className="replacement-request-form">
+                    <label>
+                      Motivo opcional
+                      <textarea
+                        onChange={(event) =>
+                          onReplacementReasonChange(
+                            memberSchedule.assignment.id,
+                            event.target.value,
+                          )
+                        }
+                        placeholder="Ex.: surgiu um imprevisto nesse horario"
+                        rows={3}
+                        value={
+                          replacementReasonByAssignment[
+                            memberSchedule.assignment.id
+                          ] ?? ""
+                        }
+                      />
+                    </label>
+                    <button
+                      className="secondary-button"
+                      disabled={
+                        requestingReplacementAssignmentId ===
+                        memberSchedule.assignment.id
+                      }
+                      onClick={() =>
+                        void onRequestReplacement(memberSchedule.assignment.id)
+                      }
+                      type="button"
+                    >
+                      {requestingReplacementAssignmentId ===
+                      memberSchedule.assignment.id
+                        ? "Enviando..."
+                        : "Pedir substituicao"}
                     </button>
                   </div>
                 ) : null}

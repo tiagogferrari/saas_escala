@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { resolveTenantContext } from "../tenant-context/tenant-context";
 import {
+  createReplacementRequest,
   createScheduleAssignment,
   createScheduleDraft,
   listMemberSchedules,
@@ -65,6 +66,17 @@ const respondAssignmentSchema = z.object({
   status: z.enum(["confirmed", "declined"]),
 });
 
+const createReplacementRequestSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .or(z.literal(""))
+    .transform((value) => (value === "" ? null : value)),
+  urgent: z.boolean().optional().default(false),
+});
+
 function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply) {
   if (error.code === "person_not_found") {
     return reply.code(404).send({
@@ -115,9 +127,16 @@ function sendMemberScheduleError(error: MemberScheduleError, reply: FastifyReply
     });
   }
 
+  if (error.code === "replacement_request_already_exists") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Ja existe um pedido de substituicao em aberto.",
+    });
+  }
+
   return reply.code(409).send({
     error: error.code,
-    message: "Essa escala nao pode ser respondida pelo membro.",
+    message: "Essa acao nao esta disponivel para essa escala.",
   });
 }
 
@@ -229,6 +248,36 @@ export async function scheduleRoutes(app: FastifyInstance) {
             params.personId,
             params.assignmentId,
             input.status,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof MemberScheduleError) {
+          return sendMemberScheduleError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/tenants/:tenantSlug/people/:personId/assignments/:assignmentId/replacement-requests",
+    async (request, reply) => {
+      const params = memberResponseParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = createReplacementRequestSchema.parse(request.body);
+
+      try {
+        return {
+          data: await createReplacementRequest(
+            context.schema,
+            params.personId,
+            params.assignmentId,
+            input,
           ),
         };
       } catch (error) {
