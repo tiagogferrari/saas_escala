@@ -129,13 +129,6 @@ function sendPublicationError(error: SchedulePublicationError, reply: FastifyRep
     });
   }
 
-  if (error.code === "schedule_not_ready") {
-    return reply.code(409).send({
-      error: error.code,
-      message: "Preencha todas as vagas antes de publicar.",
-    });
-  }
-
   return reply.code(409).send({
     error: error.code,
     message: "Apenas escalas em rascunho podem ser publicadas.",

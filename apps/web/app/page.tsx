@@ -1337,10 +1337,7 @@ function ScheduleCard({
         <div className="schedule-actions">
           <button
             className="secondary-button"
-            disabled={
-              publishingScheduleId === schedule.id ||
-              activeAssignmentCount < schedule.slot.requiredCount
-            }
+            disabled={publishingScheduleId === schedule.id}
             onClick={() => void onPublishSchedule(schedule.id)}
             type="button"
           >
@@ -1349,7 +1346,7 @@ function ScheduleCard({
               : "Publicar escala"}
           </button>
           {activeAssignmentCount < schedule.slot.requiredCount ? (
-            <span>Preencha todas as vagas para publicar.</span>
+            <span>Esta escala sera publicada com vagas em aberto.</span>
           ) : null}
         </div>
       ) : null}

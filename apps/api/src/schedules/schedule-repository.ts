@@ -136,8 +136,7 @@ type ScheduleAssignmentErrorCode =
 
 type SchedulePublicationErrorCode =
   | "schedule_not_draft"
-  | "schedule_not_found"
-  | "schedule_not_ready";
+  | "schedule_not_found";
 
 type MemberScheduleErrorCode =
   | "assignment_not_actionable"
@@ -732,22 +731,6 @@ export async function publishSchedule(schema: string, scheduleId: string) {
     }
 
     if (schedule.status === "draft") {
-      const activeCountResult = await client.query<{ active_count: string }>(
-        `select count(*) as active_count
-         from ${schema}.assignments
-         where schedule_slot_id = $1
-           and status in ('invited', 'pending', 'confirmed', 'externally_confirmed')`,
-        [schedule.slot_id],
-      );
-
-      const activeCount = Number(activeCountResult.rows[0]?.active_count ?? 0);
-      if (activeCount < schedule.required_count) {
-        throw new SchedulePublicationError(
-          "schedule_not_ready",
-          "Schedule is not ready to publish.",
-        );
-      }
-
       await client.query(
         `update ${schema}.schedules
          set status = 'published',
