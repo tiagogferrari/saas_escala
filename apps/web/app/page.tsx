@@ -204,6 +204,9 @@ export default function HomePage() {
   const [isSubmittingLocation, setIsSubmittingLocation] = useState(false);
   const [isSubmittingSchedule, setIsSubmittingSchedule] = useState(false);
   const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
+  const [publishingScheduleId, setPublishingScheduleId] = useState<string | null>(
+    null,
+  );
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
 
@@ -214,6 +217,10 @@ export default function HomePage() {
   const selectedTenant = useMemo(
     () => tenants.find((tenant) => tenant.slug === selectedTenantSlug) ?? null,
     [selectedTenantSlug, tenants],
+  );
+  const assignableSchedules = useMemo(
+    () => schedules.filter((schedule) => schedule.status === "draft"),
+    [schedules],
   );
 
   async function loadStatus() {
@@ -332,13 +339,13 @@ export default function HomePage() {
   }, [scheduleFunctions, scheduleFunctionId]);
 
   useEffect(() => {
-    const hasSelectedSchedule = schedules.some(
+    const hasSelectedSchedule = assignableSchedules.some(
       (schedule) => schedule.id === assignmentScheduleId,
     );
     if (!hasSelectedSchedule) {
-      setAssignmentScheduleId(schedules[0]?.id ?? "");
+      setAssignmentScheduleId(assignableSchedules[0]?.id ?? "");
     }
-  }, [assignmentScheduleId, schedules]);
+  }, [assignableSchedules, assignmentScheduleId]);
 
   useEffect(() => {
     const hasSelectedPerson = people.some(
@@ -555,7 +562,7 @@ export default function HomePage() {
       return;
     }
 
-    const scheduleId = assignmentScheduleId || schedules[0]?.id;
+    const scheduleId = assignmentScheduleId || assignableSchedules[0]?.id;
     const personId = assignmentPersonId || people[0]?.id;
 
     if (!scheduleId || !personId) {
@@ -601,6 +608,42 @@ export default function HomePage() {
       setWorkspaceMessage("API indisponivel ao escalar pessoa.");
     } finally {
       setIsSubmittingAssignment(false);
+    }
+  }
+
+  async function publishSchedule(scheduleId: string) {
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    setPublishingScheduleId(scheduleId);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedules/${scheduleId}/publish`,
+        {
+          method: "POST",
+        },
+      );
+
+      if (response.status === 409) {
+        const payload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(payload.message ?? "Nao foi possivel publicar.");
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel publicar a escala.");
+        return;
+      }
+
+      setWorkspaceMessage("Escala publicada.");
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setWorkspaceMessage("API indisponivel ao publicar escala.");
+    } finally {
+      setPublishingScheduleId(null);
     }
   }
 
@@ -946,17 +989,17 @@ export default function HomePage() {
                 <label>
                   Escala
                   <select
-                    disabled={schedules.length === 0}
+                    disabled={assignableSchedules.length === 0}
                     onChange={(event) =>
                       setAssignmentScheduleId(event.target.value)
                     }
                     required
                     value={assignmentScheduleId}
                   >
-                    {schedules.length === 0 ? (
-                      <option value="">Crie uma escala</option>
+                    {assignableSchedules.length === 0 ? (
+                      <option value="">Crie uma escala rascunho</option>
                     ) : null}
-                    {schedules.map((schedule) => (
+                    {assignableSchedules.map((schedule) => (
                       <option key={schedule.id} value={schedule.id}>
                         {schedule.title} - {formatDate(schedule.startsAt)}
                       </option>
@@ -1005,7 +1048,7 @@ export default function HomePage() {
                   disabled={
                     isSubmittingAssignment ||
                     people.length === 0 ||
-                    schedules.length === 0
+                    assignableSchedules.length === 0
                   }
                 >
                   {isSubmittingAssignment ? "Salvando..." : "Escalar pessoa"}
@@ -1013,7 +1056,11 @@ export default function HomePage() {
               </form>
             </div>
 
-            <SchedulePanel schedules={schedules} />
+            <SchedulePanel
+              onPublishSchedule={publishSchedule}
+              publishingScheduleId={publishingScheduleId}
+              schedules={schedules}
+            />
 
             <div className="management-grid">
               <ListPanel
@@ -1063,20 +1110,28 @@ function StatusCard({ label, status }: { label: string; status: ApiStatus }) {
   );
 }
 
-function SchedulePanel({ schedules }: { schedules: ScheduleDraft[] }) {
+function SchedulePanel({
+  onPublishSchedule,
+  publishingScheduleId,
+  schedules,
+}: {
+  onPublishSchedule: (scheduleId: string) => Promise<void>;
+  publishingScheduleId: string | null;
+  schedules: ScheduleDraft[];
+}) {
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
           <p className="eyebrow">Agenda</p>
-          <h2>Rascunhos</h2>
+          <h2>Escalas</h2>
         </div>
         <span className="count-badge">{schedules.length}</span>
       </div>
 
       {schedules.length === 0 ? (
         <div className="empty-state">
-          <strong>Nenhuma escala em rascunho ainda.</strong>
+          <strong>Nenhuma escala criada ainda.</strong>
           <p>Crie a primeira escala para liberar o proximo fluxo.</p>
         </div>
       ) : (
@@ -1100,6 +1155,27 @@ function SchedulePanel({ schedules }: { schedules: ScheduleDraft[] }) {
                   vaga(s)
                 </span>
               </div>
+
+              {schedule.status === "draft" ? (
+                <div className="schedule-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={
+                      publishingScheduleId === schedule.id ||
+                      schedule.assignments.length < schedule.slot.requiredCount
+                    }
+                    onClick={() => void onPublishSchedule(schedule.id)}
+                    type="button"
+                  >
+                    {publishingScheduleId === schedule.id
+                      ? "Publicando..."
+                      : "Publicar escala"}
+                  </button>
+                  {schedule.assignments.length < schedule.slot.requiredCount ? (
+                    <span>Preencha todas as vagas para publicar.</span>
+                  ) : null}
+                </div>
+              ) : null}
 
               {schedule.assignments.length === 0 ? (
                 <div className="assignment-empty">Nenhuma pessoa escalada.</div>

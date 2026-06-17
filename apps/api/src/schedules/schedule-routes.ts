@@ -6,7 +6,9 @@ import {
   createScheduleDraft,
   listScheduleAssignments,
   listScheduleDrafts,
+  publishSchedule,
   ScheduleAssignmentError,
+  SchedulePublicationError,
 } from "./schedule-repository";
 
 const tenantParamsSchema = z.object({
@@ -70,9 +72,37 @@ function sendAssignmentError(error: ScheduleAssignmentError, reply: FastifyReply
     });
   }
 
+  if (error.code === "schedule_not_draft") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Apenas escalas em rascunho podem receber novas pessoas.",
+    });
+  }
+
   return reply.code(409).send({
     error: error.code,
     message: "Todas as vagas desta escala ja foram preenchidas.",
+  });
+}
+
+function sendPublicationError(error: SchedulePublicationError, reply: FastifyReply) {
+  if (error.code === "schedule_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Escala nao encontrada.",
+    });
+  }
+
+  if (error.code === "schedule_not_ready") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Preencha todas as vagas antes de publicar.",
+    });
+  }
+
+  return reply.code(409).send({
+    error: error.code,
+    message: "Apenas escalas em rascunho podem ser publicadas.",
   });
 }
 
@@ -103,6 +133,31 @@ export async function scheduleRoutes(app: FastifyInstance) {
       data: schedule,
     });
   });
+
+  app.post(
+    "/tenants/:tenantSlug/schedules/:scheduleId/publish",
+    async (request, reply) => {
+      const params = scheduleParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      try {
+        const schedule = await publishSchedule(context.schema, params.scheduleId);
+
+        return {
+          data: schedule,
+        };
+      } catch (error) {
+        if (error instanceof SchedulePublicationError) {
+          return sendPublicationError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
 
   app.get(
     "/tenants/:tenantSlug/schedules/:scheduleId/assignments",

@@ -85,12 +85,27 @@ type ScheduleAssignmentRow = {
 type ScheduleAssignmentErrorCode =
   | "assignment_already_exists"
   | "person_not_found"
+  | "schedule_not_draft"
   | "schedule_not_found"
   | "slot_full";
+
+type SchedulePublicationErrorCode =
+  | "schedule_not_draft"
+  | "schedule_not_found"
+  | "schedule_not_ready";
 
 export class ScheduleAssignmentError extends Error {
   constructor(
     public readonly code: ScheduleAssignmentErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export class SchedulePublicationError extends Error {
+  constructor(
+    public readonly code: SchedulePublicationErrorCode,
     message: string,
   ) {
     super(message);
@@ -327,6 +342,38 @@ export async function listScheduleDrafts(schema: string) {
   return attachAssignmentsToSchedules(schema, result.rows.map(mapScheduleDraft));
 }
 
+export async function getScheduleDraftById(schema: string, scheduleId: string) {
+  const result = await pool.query<ScheduleDraftRow>(
+    `${scheduleSummarySelect}
+     from ${schema}.schedules s
+     join ${schema}.locations l on l.id = s.location_id
+     join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+     join ${schema}.functions f on f.id = ss.function_id
+     where s.id = $1
+     order by ss.created_at asc
+     limit 1`,
+    [scheduleId],
+  );
+
+  const schedule = result.rows[0];
+  if (!schedule) {
+    throw new SchedulePublicationError(
+      "schedule_not_found",
+      "Schedule not found.",
+    );
+  }
+
+  const [scheduleWithAssignments] = await attachAssignmentsToSchedules(schema, [
+    mapScheduleDraft(schedule),
+  ]);
+
+  if (!scheduleWithAssignments) {
+    throw new Error("Schedule query did not return a mapped schedule");
+  }
+
+  return scheduleWithAssignments;
+}
+
 export async function listScheduleAssignments(
   schema: string,
   scheduleId: string,
@@ -380,11 +427,16 @@ export async function createScheduleAssignment(
     const slotResult = await client.query<{
       id: string;
       required_count: number;
+      schedule_status: string;
     }>(
-      `select id, required_count
-       from ${schema}.schedule_slots
-       where schedule_id = $1
-       order by created_at asc
+      `select
+         ss.id,
+         ss.required_count,
+         s.status as schedule_status
+       from ${schema}.schedules s
+       join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+       where s.id = $1
+       order by ss.created_at asc
        limit 1`,
       [scheduleId],
     );
@@ -394,6 +446,13 @@ export async function createScheduleAssignment(
       throw new ScheduleAssignmentError(
         "schedule_not_found",
         "Schedule not found.",
+      );
+    }
+
+    if (slot.schedule_status !== "draft") {
+      throw new ScheduleAssignmentError(
+        "schedule_not_draft",
+        "Only draft schedules can receive assignments.",
       );
     }
 
@@ -471,4 +530,80 @@ export async function createScheduleAssignment(
   } finally {
     client.release();
   }
+}
+
+export async function publishSchedule(schema: string, scheduleId: string) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("begin");
+
+    const scheduleResult = await client.query<{
+      status: string;
+      slot_id: string;
+      required_count: number;
+    }>(
+      `select
+         s.status,
+         ss.id as slot_id,
+         ss.required_count
+       from ${schema}.schedules s
+       join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+       where s.id = $1
+       order by ss.created_at asc
+       limit 1`,
+      [scheduleId],
+    );
+
+    const schedule = scheduleResult.rows[0];
+    if (!schedule) {
+      throw new SchedulePublicationError(
+        "schedule_not_found",
+        "Schedule not found.",
+      );
+    }
+
+    if (schedule.status !== "published" && schedule.status !== "draft") {
+      throw new SchedulePublicationError(
+        "schedule_not_draft",
+        "Only draft schedules can be published.",
+      );
+    }
+
+    if (schedule.status === "draft") {
+      const activeCountResult = await client.query<{ active_count: string }>(
+        `select count(*) as active_count
+         from ${schema}.assignments
+         where schedule_slot_id = $1
+           and status in ('invited', 'pending', 'confirmed', 'externally_confirmed')`,
+        [schedule.slot_id],
+      );
+
+      const activeCount = Number(activeCountResult.rows[0]?.active_count ?? 0);
+      if (activeCount < schedule.required_count) {
+        throw new SchedulePublicationError(
+          "schedule_not_ready",
+          "Schedule is not ready to publish.",
+        );
+      }
+
+      await client.query(
+        `update ${schema}.schedules
+         set status = 'published',
+             published_at = now(),
+             updated_at = now()
+         where id = $1`,
+        [scheduleId],
+      );
+    }
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return getScheduleDraftById(schema, scheduleId);
 }
