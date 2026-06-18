@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS ${schema}.people (
 CREATE INDEX IF NOT EXISTS people_status_idx ON ${schema}.people (status);
 CREATE INDEX IF NOT EXISTS people_global_user_idx ON ${schema}.people (global_user_id);
 
+CREATE TABLE IF NOT EXISTS ${schema}.member_access_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  person_id uuid NOT NULL REFERENCES ${schema}.people (id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  last_used_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS member_access_tokens_person_idx
+  ON ${schema}.member_access_tokens (person_id);
+
 CREATE TABLE IF NOT EXISTS ${schema}.regions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,

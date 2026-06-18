@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, use, useEffect, useMemo, useState } from "react";
 
 type Tenant = {
   id: string;
@@ -111,9 +111,49 @@ type MemberSchedule = {
   companions: ScheduleAssignment[];
 };
 
+type MemberAccessPayload = {
+  person: Person;
+  schedules: MemberSchedule[];
+};
+
+type MemberAccessLink = {
+  token: string;
+  expiresAt: string;
+  person: Person;
+};
+
 type ApiStatus = "checking" | "online" | "offline";
 
+type PageSearchParams = Record<string, string | string[] | undefined>;
+
+type HomePageProps = {
+  searchParams: Promise<PageSearchParams>;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3333";
+
+function buildMemberAccessUrl(tenantSlug: string, token: string) {
+  if (typeof window === "undefined") {
+    return `/?tenant=${tenantSlug}&memberToken=${token}`;
+  }
+
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.searchParams.set("tenant", tenantSlug);
+  url.searchParams.set("memberToken", token);
+
+  return url.toString();
+}
+
+function getSearchParamValue(searchParams: PageSearchParams, name: string) {
+  const value = searchParams[name];
+
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+
+  return value ?? "";
+}
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("pt-BR", {
@@ -359,12 +399,19 @@ function getReplacementCandidatePeople(
   );
 }
 
-export default function HomePage() {
+export default function HomePage({ searchParams }: HomePageProps) {
+  const initialSearchParams = use(searchParams);
+  const initialTenantSlug = getSearchParamValue(initialSearchParams, "tenant");
+  const initialMemberAccessToken = getSearchParamValue(
+    initialSearchParams,
+    "memberToken",
+  );
+
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [dbStatus, setDbStatus] = useState<ApiStatus>("checking");
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selectedTenantSlug, setSelectedTenantSlug] = useState<string | null>(
-    null,
+    () => initialTenantSlug || null,
   );
   const [people, setPeople] = useState<Person[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -396,11 +443,20 @@ export default function HomePage() {
     "externally_confirmed" | "invited"
   >("externally_confirmed");
   const [memberPersonId, setMemberPersonId] = useState("");
+  const [memberAccessToken, setMemberAccessToken] = useState(
+    () => initialMemberAccessToken,
+  );
+  const [memberAccessPerson, setMemberAccessPerson] = useState<Person | null>(
+    null,
+  );
   const [memberSchedules, setMemberSchedules] = useState<MemberSchedule[]>([]);
   const [replacementReasonByAssignment, setReplacementReasonByAssignment] =
     useState<Record<string, string>>({});
   const [replacementCandidateByRequest, setReplacementCandidateByRequest] =
     useState<Record<string, string>>({});
+  const [memberAccessLinkByPerson, setMemberAccessLinkByPerson] = useState<
+    Record<string, string>
+  >({});
 
   const [isSubmittingTenant, setIsSubmittingTenant] = useState(false);
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
@@ -422,6 +478,8 @@ export default function HomePage() {
   const [invitingReplacementRequestId, setInvitingReplacementRequestId] =
     useState<string | null>(null);
   const [completingReplacementRequestId, setCompletingReplacementRequestId] =
+    useState<string | null>(null);
+  const [creatingMemberAccessPersonId, setCreatingMemberAccessPersonId] =
     useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
@@ -514,8 +572,12 @@ export default function HomePage() {
     setSchedules(schedulesPayload.data);
   }
 
-  async function loadMemberSchedules(tenantSlug: string, personId: string) {
-    if (!personId) {
+  async function loadMemberSchedules(
+    tenantSlug: string,
+    personId: string,
+    accessToken = memberAccessToken,
+  ) {
+    if (!personId && !accessToken) {
       setMemberSchedules([]);
       return;
     }
@@ -524,19 +586,39 @@ export default function HomePage() {
     setMemberMessage(null);
 
     try {
-      const response = await fetch(
-        `${apiUrl}/tenants/${tenantSlug}/people/${personId}/member-schedules`,
-        { cache: "no-store" },
-      );
+      const response = accessToken
+        ? await fetch(
+            `${apiUrl}/tenants/${tenantSlug}/member-access/${accessToken}/schedules`,
+            { cache: "no-store" },
+          )
+        : await fetch(
+            `${apiUrl}/tenants/${tenantSlug}/people/${personId}/member-schedules`,
+            { cache: "no-store" },
+          );
 
       if (!response.ok) {
         setMemberSchedules([]);
-        setMemberMessage("Nao foi possivel carregar a visao do membro.");
+        setMemberAccessPerson(null);
+        setMemberMessage(
+          accessToken
+            ? "Link de acesso invalido ou expirado."
+            : "Nao foi possivel carregar a visao do membro.",
+        );
         return;
       }
 
-      const payload = (await response.json()) as { data: MemberSchedule[] };
-      setMemberSchedules(payload.data);
+      if (accessToken) {
+        const payload = (await response.json()) as {
+          data: MemberAccessPayload;
+        };
+        setMemberAccessPerson(payload.data.person);
+        setMemberPersonId(payload.data.person.id);
+        setMemberSchedules(payload.data.schedules);
+      } else {
+        const payload = (await response.json()) as { data: MemberSchedule[] };
+        setMemberAccessPerson(null);
+        setMemberSchedules(payload.data);
+      }
     } catch {
       setMemberSchedules([]);
       setMemberMessage("API indisponivel ao carregar a visao do membro.");
@@ -549,11 +631,21 @@ export default function HomePage() {
     await Promise.all([loadStatus(), loadTenants()]);
     if (selectedTenantSlug) {
       await loadTenantData(selectedTenantSlug);
-      if (memberPersonId) {
-        await loadMemberSchedules(selectedTenantSlug, memberPersonId);
+      if (memberAccessToken || memberPersonId) {
+        await loadMemberSchedules(
+          selectedTenantSlug,
+          memberPersonId,
+          memberAccessToken,
+        );
       }
     }
   }
+
+  useEffect(() => {
+    if (memberAccessToken) {
+      setMemberMessage("Acesso do membro carregado por link.");
+    }
+  }, [memberAccessToken]);
 
   useEffect(() => {
     void refresh();
@@ -614,21 +706,29 @@ export default function HomePage() {
   }, [assignmentPersonId, people]);
 
   useEffect(() => {
+    if (memberAccessToken) {
+      return;
+    }
+
     const hasSelectedMember = people.some(
       (person) => person.id === memberPersonId,
     );
     if (!hasSelectedMember) {
       setMemberPersonId(people[0]?.id ?? "");
     }
-  }, [memberPersonId, people]);
+  }, [memberAccessToken, memberPersonId, people]);
 
   useEffect(() => {
-    if (selectedTenantSlug && memberPersonId) {
-      void loadMemberSchedules(selectedTenantSlug, memberPersonId);
+    if (selectedTenantSlug && (memberAccessToken || memberPersonId)) {
+      void loadMemberSchedules(
+        selectedTenantSlug,
+        memberPersonId,
+        memberAccessToken,
+      );
     } else {
       setMemberSchedules([]);
     }
-  }, [memberPersonId, selectedTenantSlug]);
+  }, [memberAccessToken, memberPersonId, selectedTenantSlug]);
 
   function onNameChange(value: string) {
     setDisplayName(value);
@@ -925,11 +1025,83 @@ export default function HomePage() {
     }
   }
 
+  function changeMemberPerson(personId: string) {
+    setMemberAccessToken("");
+    setMemberAccessPerson(null);
+    setMemberPersonId(personId);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("memberToken");
+      window.history.replaceState(null, "", url.toString());
+    }
+  }
+
+  function clearMemberAccess() {
+    setMemberAccessToken("");
+    setMemberAccessPerson(null);
+    setMemberMessage(null);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("memberToken");
+      window.history.replaceState(null, "", url.toString());
+    }
+  }
+
+  async function createMemberAccessLink(personId: string) {
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    setCreatingMemberAccessPersonId(personId);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/people/${personId}/access-links`,
+        {
+          method: "POST",
+        },
+      );
+
+      if (response.status === 404) {
+        setWorkspaceMessage("Pessoa nao encontrada para gerar acesso.");
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel gerar link de acesso.");
+        return;
+      }
+
+      const payload = (await response.json()) as { data: MemberAccessLink };
+      const link = buildMemberAccessUrl(selectedTenantSlug, payload.data.token);
+
+      setMemberAccessLinkByPerson((currentLinks) => ({
+        ...currentLinks,
+        [personId]: link,
+      }));
+
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(link).catch(() => undefined);
+      }
+
+      setWorkspaceMessage(
+        `Link de acesso gerado para ${payload.data.person.displayName}.`,
+      );
+    } catch {
+      setWorkspaceMessage("API indisponivel ao gerar link de acesso.");
+    } finally {
+      setCreatingMemberAccessPersonId(null);
+    }
+  }
+
   async function respondToMemberSchedule(
     assignmentId: string,
     status: "confirmed" | "declined",
   ) {
-    if (!selectedTenantSlug || !memberPersonId) {
+    if (!selectedTenantSlug || (!memberPersonId && !memberAccessToken)) {
       return;
     }
 
@@ -937,16 +1109,32 @@ export default function HomePage() {
     setMemberMessage(null);
 
     try {
-      const response = await fetch(
-        `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/respond`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ status }),
-        },
-      );
+      const response = memberAccessToken
+        ? await fetch(
+            `${apiUrl}/tenants/${selectedTenantSlug}/member-access/${memberAccessToken}/assignments/${assignmentId}/respond`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ status }),
+            },
+          )
+        : await fetch(
+            `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/respond`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ status }),
+            },
+          );
+
+      if (response.status === 401) {
+        setMemberMessage("Link de acesso invalido ou expirado.");
+        return;
+      }
 
       if (response.status === 409 || response.status === 404) {
         const payload = (await response.json()) as { message?: string };
@@ -959,8 +1147,17 @@ export default function HomePage() {
         return;
       }
 
-      const payload = (await response.json()) as { data: MemberSchedule[] };
-      setMemberSchedules(payload.data);
+      if (memberAccessToken) {
+        const payload = (await response.json()) as {
+          data: MemberAccessPayload;
+        };
+        setMemberAccessPerson(payload.data.person);
+        setMemberSchedules(payload.data.schedules);
+      } else {
+        const payload = (await response.json()) as { data: MemberSchedule[] };
+        setMemberSchedules(payload.data);
+      }
+
       setMemberMessage(
         status === "confirmed" ? "Presenca confirmada." : "Convite recusado.",
       );
@@ -980,7 +1177,7 @@ export default function HomePage() {
   }
 
   async function requestReplacement(assignmentId: string) {
-    if (!selectedTenantSlug || !memberPersonId) {
+    if (!selectedTenantSlug || (!memberPersonId && !memberAccessToken)) {
       return;
     }
 
@@ -988,18 +1185,36 @@ export default function HomePage() {
     setMemberMessage(null);
 
     try {
-      const response = await fetch(
-        `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/replacement-requests`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            reason: replacementReasonByAssignment[assignmentId] ?? "",
-          }),
-        },
-      );
+      const response = memberAccessToken
+        ? await fetch(
+            `${apiUrl}/tenants/${selectedTenantSlug}/member-access/${memberAccessToken}/assignments/${assignmentId}/replacement-requests`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                reason: replacementReasonByAssignment[assignmentId] ?? "",
+              }),
+            },
+          )
+        : await fetch(
+            `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/replacement-requests`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                reason: replacementReasonByAssignment[assignmentId] ?? "",
+              }),
+            },
+          );
+
+      if (response.status === 401) {
+        setMemberMessage("Link de acesso invalido ou expirado.");
+        return;
+      }
 
       if (response.status === 409 || response.status === 404) {
         const payload = (await response.json()) as { message?: string };
@@ -1014,8 +1229,17 @@ export default function HomePage() {
         return;
       }
 
-      const payload = (await response.json()) as { data: MemberSchedule[] };
-      setMemberSchedules(payload.data);
+      if (memberAccessToken) {
+        const payload = (await response.json()) as {
+          data: MemberAccessPayload;
+        };
+        setMemberAccessPerson(payload.data.person);
+        setMemberSchedules(payload.data.schedules);
+      } else {
+        const payload = (await response.json()) as { data: MemberSchedule[] };
+        setMemberSchedules(payload.data);
+      }
+
       setReplacementReasonByAssignment((currentReasons) => ({
         ...currentReasons,
         [assignmentId]: "",
@@ -1028,7 +1252,6 @@ export default function HomePage() {
       setRequestingReplacementAssignmentId(null);
     }
   }
-
   function updateReplacementCandidate(
     replacementRequestId: string,
     personId: string,
@@ -1134,6 +1357,53 @@ export default function HomePage() {
     } finally {
       setCompletingReplacementRequestId(null);
     }
+  }
+
+  const isMemberAccessMode = Boolean(memberAccessToken);
+
+  if (isMemberAccessMode) {
+    return (
+      <main className="shell member-access-shell">
+        <section className="member-access-hero">
+          <div>
+            <p className="eyebrow">Acesso do membro</p>
+            <h1>Minhas escalas</h1>
+            <p className="hero-copy">
+              {memberAccessPerson
+                ? `Ola, ${memberAccessPerson.displayName}. Confira suas escalas, responda convites e peca substituicao quando precisar.`
+                : "Estamos validando seu link de acesso para carregar suas escalas."}
+            </p>
+          </div>
+
+          <div className="member-access-summary">
+            <span>Espaco</span>
+            <strong>
+              {selectedTenant?.displayName ??
+                selectedTenantSlug ??
+                "Carregando"}
+            </strong>
+          </div>
+        </section>
+
+        <MemberPortal
+          isLoading={isLoadingMemberSchedules}
+          isMemberAccessActive={isMemberAccessMode}
+          memberAccessPerson={memberAccessPerson}
+          memberMessage={memberMessage}
+          memberSchedules={memberSchedules}
+          onClearMemberAccess={clearMemberAccess}
+          onMemberChange={changeMemberPerson}
+          onReplacementReasonChange={updateReplacementReason}
+          onRequestReplacement={requestReplacement}
+          onRespond={respondToMemberSchedule}
+          people={people}
+          replacementReasonByAssignment={replacementReasonByAssignment}
+          requestingReplacementAssignmentId={requestingReplacementAssignmentId}
+          respondingAssignmentId={respondingAssignmentId}
+          selectedMemberId={memberPersonId}
+        />
+      </main>
+    );
   }
 
   return (
@@ -1574,9 +1844,12 @@ export default function HomePage() {
 
             <MemberPortal
               isLoading={isLoadingMemberSchedules}
+              isMemberAccessActive={Boolean(memberAccessToken)}
+              memberAccessPerson={memberAccessPerson}
               memberMessage={memberMessage}
               memberSchedules={memberSchedules}
-              onMemberChange={setMemberPersonId}
+              onClearMemberAccess={clearMemberAccess}
+              onMemberChange={changeMemberPerson}
               onReplacementReasonChange={updateReplacementReason}
               onRequestReplacement={requestReplacement}
               onRespond={respondToMemberSchedule}
@@ -1590,14 +1863,11 @@ export default function HomePage() {
             />
 
             <div className="management-grid">
-              <ListPanel
-                emptyText="Nenhuma pessoa cadastrada ainda."
-                items={people.map((person) => ({
-                  id: person.id,
-                  title: person.displayName,
-                  description: person.email || person.phone || "Sem contato",
-                }))}
-                title="Pessoas"
+              <MemberAccessPanel
+                accessLinkByPerson={memberAccessLinkByPerson}
+                creatingMemberAccessPersonId={creatingMemberAccessPersonId}
+                onCreateAccessLink={createMemberAccessLink}
+                people={people}
               />
               <ListPanel
                 emptyText="Nenhum local cadastrado ainda."
@@ -1791,8 +2061,8 @@ function ScheduleCard({
           {schedule.assignments.map((assignment) => {
             const replacementRequest = assignment.replacementRequest;
             const linkedReplacementRequest = assignment.replacementRequestId
-              ? replacementRequestsById.get(assignment.replacementRequestId) ??
-                null
+              ? (replacementRequestsById.get(assignment.replacementRequestId) ??
+                null)
               : null;
             const selectedCandidateId = replacementRequest
               ? (replacementCandidateByRequest[replacementRequest.id] ?? "")
@@ -1964,8 +2234,11 @@ function ScheduleCard({
 
 function MemberPortal({
   isLoading,
+  isMemberAccessActive,
+  memberAccessPerson,
   memberMessage,
   memberSchedules,
+  onClearMemberAccess,
   onMemberChange,
   onReplacementReasonChange,
   onRequestReplacement,
@@ -1977,8 +2250,11 @@ function MemberPortal({
   selectedMemberId,
 }: {
   isLoading: boolean;
+  isMemberAccessActive: boolean;
+  memberAccessPerson: Person | null;
   memberMessage: string | null;
   memberSchedules: MemberSchedule[];
+  onClearMemberAccess: () => void;
   onMemberChange: (personId: string) => void;
   onReplacementReasonChange: (assignmentId: string, reason: string) => void;
   onRequestReplacement: (assignmentId: string) => Promise<void>;
@@ -2002,25 +2278,43 @@ function MemberPortal({
         <span className="count-badge">{memberSchedules.length}</span>
       </div>
 
-      <div className="member-toolbar">
-        <label>
-          Ver como
-          <select
-            disabled={people.length === 0}
-            onChange={(event) => onMemberChange(event.target.value)}
-            value={selectedMemberId}
+      {isMemberAccessActive ? (
+        <div className="member-access-banner">
+          <div>
+            <strong>
+              {memberAccessPerson?.displayName ?? "Validando acesso..."}
+            </strong>
+            <span>Acesso do membro por link</span>
+          </div>
+          <button
+            className="ghost-button"
+            onClick={onClearMemberAccess}
+            type="button"
           >
-            {people.length === 0 ? (
-              <option value="">Cadastre uma pessoa</option>
-            ) : null}
-            {people.map((person) => (
-              <option key={person.id} value={person.id}>
-                {person.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+            Sair do acesso
+          </button>
+        </div>
+      ) : (
+        <div className="member-toolbar">
+          <label>
+            Ver como
+            <select
+              disabled={people.length === 0}
+              onChange={(event) => onMemberChange(event.target.value)}
+              value={selectedMemberId}
+            >
+              {people.length === 0 ? (
+                <option value="">Cadastre uma pessoa</option>
+              ) : null}
+              {people.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
 
       {memberMessage ? <p className="member-message">{memberMessage}</p> : null}
 
@@ -2172,6 +2466,67 @@ function MemberPortal({
                         : "Pedir substituicao"}
                     </button>
                   </div>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MemberAccessPanel({
+  accessLinkByPerson,
+  creatingMemberAccessPersonId,
+  onCreateAccessLink,
+  people,
+}: {
+  accessLinkByPerson: Record<string, string>;
+  creatingMemberAccessPersonId: string | null;
+  onCreateAccessLink: (personId: string) => Promise<void>;
+  people: Person[];
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">Acesso simples</p>
+          <h2>Links dos membros</h2>
+        </div>
+        <span className="count-badge">{people.length}</span>
+      </div>
+
+      {people.length === 0 ? (
+        <div className="empty-state">
+          <strong>Nenhuma pessoa cadastrada ainda.</strong>
+        </div>
+      ) : (
+        <div className="member-access-list">
+          {people.map((person) => {
+            const accessLink = accessLinkByPerson[person.id];
+
+            return (
+              <article className="member-access-card" key={person.id}>
+                <div>
+                  <strong>{person.displayName}</strong>
+                  <span>{person.email || person.phone || "Sem contato"}</span>
+                </div>
+                <button
+                  className="secondary-button"
+                  disabled={creatingMemberAccessPersonId === person.id}
+                  onClick={() => void onCreateAccessLink(person.id)}
+                  type="button"
+                >
+                  {creatingMemberAccessPersonId === person.id
+                    ? "Gerando..."
+                    : "Gerar link"}
+                </button>
+                {accessLink ? (
+                  <label className="access-link-field">
+                    Link gerado
+                    <textarea readOnly rows={2} value={accessLink} />
+                  </label>
                 ) : null}
               </article>
             );
