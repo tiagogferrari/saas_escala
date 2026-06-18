@@ -553,10 +553,32 @@ dd {
   padding: 12px;
 }
 
+.assignment-item.is-replacement-original {
+  border-color: #fde68a;
+  box-shadow: inset 4px 0 0 #f59e0b;
+}
+
+.assignment-item.is-replacement-candidate {
+  border-color: #bfdbfe;
+  box-shadow: inset 4px 0 0 #2563eb;
+}
+
+.assignment-item.is-cancelled {
+  background: #f8fafc;
+  opacity: 0.8;
+}
+
 .assignment-detail {
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+
+.assignment-title-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .assignment-item strong {
@@ -571,11 +593,42 @@ dd {
   margin-top: 4px;
 }
 
-.assignment-item span {
+.assignment-status {
   color: var(--color-muted);
   font-size: 0.85rem;
   font-weight: 700;
   text-align: right;
+  white-space: nowrap;
+}
+
+.assignment-badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  padding: 0.25rem 0.5rem;
+  text-transform: uppercase;
+}
+
+.assignment-badge.is-warning {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.assignment-badge.is-info {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.assignment-badge.is-success {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.assignment-badge.is-muted {
+  background: #f1f5f9;
+  color: #64748b;
 }
 
 .replacement-manager-actions {
@@ -752,7 +805,7 @@ dd {
     flex-direction: column;
   }
 
-  .assignment-item span {
+  .assignment-status {
     text-align: left;
   }
 

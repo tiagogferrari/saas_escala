@@ -58,6 +58,7 @@ type ScheduleAssignment = {
   status: string;
   confirmedAt: string | null;
   confirmationSource: string | null;
+  replacementRequestId: string | null;
   replacementRequest: ReplacementRequest | null;
   createdAt: string;
 };
@@ -232,14 +233,85 @@ function isActiveAssignmentStatus(status: string) {
   );
 }
 
-function countActiveAssignments(schedule: ScheduleDraft) {
-  return schedule.assignments.filter((assignment) =>
-    isActiveAssignmentStatus(assignment.status),
+function canInviteReplacementCandidate(status: string) {
+  return ["requested", "under_review"].includes(status);
+}
+
+function getReplacementRequestsById(schedule: ScheduleDraft) {
+  const replacementRequestsById = new Map<string, ReplacementRequest>();
+
+  for (const assignment of schedule.assignments) {
+    if (assignment.replacementRequest) {
+      replacementRequestsById.set(
+        assignment.replacementRequest.id,
+        assignment.replacementRequest,
+      );
+    }
+  }
+
+  return replacementRequestsById;
+}
+
+function countEffectiveAssignments(schedule: ScheduleDraft) {
+  const replacementRequestsById = getReplacementRequestsById(schedule);
+
+  return schedule.assignments.filter((assignment) => {
+    if (!isActiveAssignmentStatus(assignment.status)) {
+      return false;
+    }
+
+    if (!assignment.replacementRequestId) {
+      return true;
+    }
+
+    return (
+      replacementRequestsById.get(assignment.replacementRequestId)?.status ===
+      "completed"
+    );
+  }).length;
+}
+
+function countReplacementRequestsInProgress(schedule: ScheduleDraft) {
+  return schedule.assignments.filter(
+    (assignment) =>
+      assignment.replacementRequest &&
+      assignment.replacementRequest.status !== "completed",
   ).length;
 }
 
-function canInviteReplacementCandidate(status: string) {
-  return ["requested", "under_review"].includes(status);
+function originalReplacementBadgeLabel(replacementRequest: ReplacementRequest) {
+  if (replacementRequest.status === "completed") {
+    return "Original substituido";
+  }
+
+  if (replacementRequest.status === "accepted") {
+    return "Original aguardando conclusao";
+  }
+
+  return "Original com imprevisto";
+}
+
+function replacementCandidateBadgeLabel(
+  assignment: ScheduleAssignment,
+  replacementRequest: ReplacementRequest | null,
+) {
+  if (assignment.status === "declined") {
+    return "Substituto recusou";
+  }
+
+  if (replacementRequest?.status === "completed") {
+    return "Substituto final";
+  }
+
+  if (
+    replacementRequest?.status === "accepted" ||
+    assignment.status === "confirmed" ||
+    assignment.status === "externally_confirmed"
+  ) {
+    return "Substituto aceito";
+  }
+
+  return "Substituto convidado";
 }
 
 function schedulesOverlap(first: ScheduleDraft, second: ScheduleDraft) {
@@ -1658,7 +1730,10 @@ function ScheduleCard({
   schedule: ScheduleDraft;
   schedules: ScheduleDraft[];
 }) {
-  const activeAssignmentCount = countActiveAssignments(schedule);
+  const activeAssignmentCount = countEffectiveAssignments(schedule);
+  const replacementRequestsById = getReplacementRequestsById(schedule);
+  const replacementRequestsInProgress =
+    countReplacementRequestsInProgress(schedule);
   const replacementCandidatePeople = getReplacementCandidatePeople(
     people,
     schedules,
@@ -1682,6 +1757,13 @@ function ScheduleCard({
         <span>
           {activeAssignmentCount}/{schedule.slot.requiredCount} vaga(s)
         </span>
+        {replacementRequestsInProgress > 0 ? (
+          <span>
+            {replacementRequestsInProgress === 1
+              ? "1 substituicao em andamento"
+              : `${replacementRequestsInProgress} substituicoes em andamento`}
+          </span>
+        ) : null}
       </div>
 
       {schedule.status === "draft" ? (
@@ -1708,6 +1790,10 @@ function ScheduleCard({
         <div className="assignment-list">
           {schedule.assignments.map((assignment) => {
             const replacementRequest = assignment.replacementRequest;
+            const linkedReplacementRequest = assignment.replacementRequestId
+              ? replacementRequestsById.get(assignment.replacementRequestId) ??
+                null
+              : null;
             const selectedCandidateId = replacementRequest
               ? (replacementCandidateByRequest[replacementRequest.id] ?? "")
               : "";
@@ -1715,12 +1801,51 @@ function ScheduleCard({
               replacementCandidatePeople.some(
                 (person) => person.id === selectedCandidateId,
               );
+            const assignmentClassName = [
+              "assignment-item",
+              replacementRequest ? "is-replacement-original" : "",
+              assignment.replacementRequestId ? "is-replacement-candidate" : "",
+              assignment.status === "cancelled" ? "is-cancelled" : "",
+            ]
+              .filter(Boolean)
+              .join(" ");
 
             return (
-              <div className="assignment-item" key={assignment.id}>
+              <div className={assignmentClassName} key={assignment.id}>
                 <div className="assignment-detail">
                   <div>
-                    <strong>{assignment.assigneeName}</strong>
+                    <div className="assignment-title-row">
+                      <strong>{assignment.assigneeName}</strong>
+                      {replacementRequest ? (
+                        <span
+                          className={`assignment-badge ${
+                            replacementRequest.status === "completed"
+                              ? "is-success"
+                              : "is-warning"
+                          }`}
+                        >
+                          {originalReplacementBadgeLabel(replacementRequest)}
+                        </span>
+                      ) : null}
+                      {assignment.replacementRequestId ? (
+                        <span
+                          className={`assignment-badge ${
+                            linkedReplacementRequest?.status === "completed"
+                              ? "is-success"
+                              : linkedReplacementRequest?.status === "accepted"
+                                ? "is-info"
+                                : assignment.status === "declined"
+                                  ? "is-muted"
+                                  : "is-warning"
+                          }`}
+                        >
+                          {replacementCandidateBadgeLabel(
+                            assignment,
+                            linkedReplacementRequest,
+                          )}
+                        </span>
+                      ) : null}
+                    </div>
                     {replacementRequest ? (
                       <small>
                         {replacementRequestStatusLabel(
@@ -1729,6 +1854,14 @@ function ScheduleCard({
                         {replacementRequest.reason
                           ? `: ${replacementRequest.reason}`
                           : ""}
+                      </small>
+                    ) : null}
+                    {linkedReplacementRequest ? (
+                      <small>
+                        Ligado ao pedido:{" "}
+                        {replacementRequestStatusLabel(
+                          linkedReplacementRequest.status,
+                        )}
                       </small>
                     ) : null}
                   </div>
@@ -1817,7 +1950,9 @@ function ScheduleCard({
                     </div>
                   ) : null}
                 </div>
-                <span>{assignmentStatusLabel(assignment.status)}</span>
+                <span className="assignment-status">
+                  {assignmentStatusLabel(assignment.status)}
+                </span>
               </div>
             );
           })}

@@ -10,6 +10,7 @@ export type ScheduleAssignment = {
   status: string;
   confirmedAt: string | null;
   confirmationSource: string | null;
+  replacementRequestId: string | null;
   replacementRequest: ReplacementRequest | null;
   createdAt: string;
 };
@@ -121,6 +122,7 @@ type ScheduleAssignmentRow = {
   confirmed_at: Date | null;
   confirmation_source: string | null;
   created_at: Date;
+  linked_replacement_request_id: string | null;
   replacement_request_id: string | null;
   replacement_requested_by_person_id: string | null;
   replacement_request_status: string | null;
@@ -136,6 +138,7 @@ type MemberScheduleRow = {
   assignment_confirmed_at: Date | null;
   assignment_confirmation_source: string | null;
   assignment_created_at: Date;
+  linked_replacement_request_id: string | null;
   assignee_id: string;
   assignee_name: string;
   schedule_id: string;
@@ -259,6 +262,7 @@ function mapMemberSchedule(
       status: row.assignment_status,
       confirmedAt: row.assignment_confirmed_at?.toISOString() ?? null,
       confirmationSource: row.assignment_confirmation_source,
+      replacementRequestId: row.linked_replacement_request_id,
       replacementRequest: mapReplacementRequest({
         id: row.replacement_request_id,
         assignment_id: row.assignment_id,
@@ -330,6 +334,7 @@ function mapScheduleAssignment(row: ScheduleAssignmentRow): ScheduleAssignment {
     status: row.status,
     confirmedAt: row.confirmed_at?.toISOString() ?? null,
     confirmationSource: row.confirmation_source,
+    replacementRequestId: row.linked_replacement_request_id,
     replacementRequest: mapReplacementRequest({
       id: row.replacement_request_id,
       assignment_id: row.id,
@@ -373,6 +378,7 @@ select
   a.confirmed_at,
   a.confirmation_source,
   a.created_at,
+  a.replacement_request_id as linked_replacement_request_id,
   rr.id as replacement_request_id,
   rr.requested_by_person_id as replacement_requested_by_person_id,
   rr.status as replacement_request_status,
@@ -628,6 +634,7 @@ export async function listMemberSchedules(schema: string, personId: string) {
        a.confirmed_at as assignment_confirmed_at,
        a.confirmation_source as assignment_confirmation_source,
        a.created_at as assignment_created_at,
+       a.replacement_request_id as linked_replacement_request_id,
        a.assignee_id,
        p.display_name as assignee_name,
        s.id as schedule_id,
