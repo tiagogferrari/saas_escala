@@ -162,6 +162,25 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
+function formatScheduleDay(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "long",
+    weekday: "long",
+  }).format(new Date(value));
+}
+
+function formatTimeRange(startsAt: string, endsAt: string) {
+  const formatter = new Intl.DateTimeFormat("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return `${formatter.format(new Date(startsAt))} ate ${formatter.format(
+    new Date(endsAt),
+  )}`;
+}
+
 function toDatetimeLocalInputValue(date: Date) {
   const timezoneOffset = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - timezoneOffset).toISOString().slice(0, 16);
@@ -265,6 +284,22 @@ function replacementRequestStatusLabel(status: string) {
   }
 
   return status;
+}
+
+function memberAssignmentPillClassName(status: string) {
+  const variants = ["pill", "member-assignment-pill"];
+
+  if (["confirmed", "externally_confirmed"].includes(status)) {
+    variants.push("is-success");
+  } else if (["invited", "pending"].includes(status)) {
+    variants.push("is-warning");
+  } else if (["declined", "cancelled"].includes(status)) {
+    variants.push("is-danger");
+  } else {
+    variants.push("is-muted");
+  }
+
+  return variants.join(" ");
 }
 
 function isActiveAssignmentStatus(status: string) {
@@ -2268,6 +2303,27 @@ function MemberPortal({
   respondingAssignmentId: string | null;
   selectedMemberId: string;
 }) {
+  const memberSummary = useMemo(() => {
+    const invitations = memberSchedules.filter((memberSchedule) =>
+      ["invited", "pending"].includes(memberSchedule.assignment.status),
+    ).length;
+    const confirmed = memberSchedules.filter((memberSchedule) =>
+      ["confirmed", "externally_confirmed"].includes(
+        memberSchedule.assignment.status,
+      ),
+    ).length;
+    const replacements = memberSchedules.filter(
+      (memberSchedule) => memberSchedule.assignment.replacementRequest,
+    ).length;
+
+    return {
+      confirmed,
+      invitations,
+      replacements,
+      total: memberSchedules.length,
+    };
+  }, [memberSchedules]);
+
   return (
     <section className="panel member-portal">
       <div className="panel-header">
@@ -2318,14 +2374,39 @@ function MemberPortal({
 
       {memberMessage ? <p className="member-message">{memberMessage}</p> : null}
 
+      {!isLoading && memberSchedules.length > 0 ? (
+        <div className="member-portal-summary">
+          <div>
+            <span>Total</span>
+            <strong>{memberSummary.total}</strong>
+          </div>
+          <div>
+            <span>Convites</span>
+            <strong>{memberSummary.invitations}</strong>
+          </div>
+          <div>
+            <span>Confirmadas</span>
+            <strong>{memberSummary.confirmed}</strong>
+          </div>
+          <div>
+            <span>Substituicoes</span>
+            <strong>{memberSummary.replacements}</strong>
+          </div>
+        </div>
+      ) : null}
+
       {isLoading ? (
-        <div className="empty-state">
+        <div className="empty-state member-empty-state">
           <strong>Carregando escalas do membro...</strong>
         </div>
       ) : memberSchedules.length === 0 ? (
-        <div className="empty-state">
+        <div className="empty-state member-empty-state">
           <strong>Nenhuma escala publicada para essa pessoa.</strong>
-          <p>Publique uma escala com essa pessoa para aparecer nesta visao.</p>
+          <p>
+            {isMemberAccessActive
+              ? "Quando houver uma escala publicada, ela aparecera aqui."
+              : "Publique uma escala com essa pessoa para aparecer nesta visao."}
+          </p>
         </div>
       ) : (
         <div className="member-schedule-list">
@@ -2345,26 +2426,46 @@ function MemberPortal({
                 className="member-schedule-card"
                 key={memberSchedule.assignment.id}
               >
-                <header>
-                  <div>
+                <header className="member-schedule-card-header">
+                  <div className="member-schedule-title">
+                    <span>{memberSchedule.schedule.slot.function.name}</span>
                     <strong>{memberSchedule.schedule.title}</strong>
-                    <span>{memberSchedule.schedule.location.name}</span>
                   </div>
-                  <span className="pill">
+                  <span
+                    className={memberAssignmentPillClassName(
+                      memberSchedule.assignment.status,
+                    )}
+                  >
                     {assignmentStatusLabel(memberSchedule.assignment.status)}
                   </span>
                 </header>
 
-                <p>
-                  {formatDate(memberSchedule.schedule.startsAt)} ate{" "}
-                  {formatDate(memberSchedule.schedule.endsAt)}
-                </p>
-
-                <div className="schedule-meta">
-                  <span>{memberSchedule.schedule.slot.function.name}</span>
-                  <span>
+                <div className="member-schedule-detail-grid">
+                  <div>
+                    <span>Data</span>
+                    <strong>
+                      {formatScheduleDay(memberSchedule.schedule.startsAt)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Horario</span>
+                    <strong>
+                      {formatTimeRange(
+                        memberSchedule.schedule.startsAt,
+                        memberSchedule.schedule.endsAt,
+                      )}
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Local</span>
+                    <strong>{memberSchedule.schedule.location.name}</strong>
+                  </div>
+                  <div>
+                    <span>Escala</span>
+                    <strong>
                     {scheduleStatusLabel(memberSchedule.schedule.status)}
-                  </span>
+                    </strong>
+                  </div>
                 </div>
 
                 {memberSchedule.companions.length === 0 ? (
@@ -2398,39 +2499,57 @@ function MemberPortal({
                 ) : null}
 
                 {canRespond ? (
-                  <div className="inline-actions">
-                    <button
-                      className="secondary-button"
-                      disabled={
-                        respondingAssignmentId === memberSchedule.assignment.id
-                      }
-                      onClick={() =>
-                        void onRespond(
-                          memberSchedule.assignment.id,
-                          "confirmed",
-                        )
-                      }
-                      type="button"
-                    >
-                      Confirmar
-                    </button>
-                    <button
-                      className="danger-button"
-                      disabled={
-                        respondingAssignmentId === memberSchedule.assignment.id
-                      }
-                      onClick={() =>
-                        void onRespond(memberSchedule.assignment.id, "declined")
-                      }
-                      type="button"
-                    >
-                      Recusar
-                    </button>
+                  <div className="member-action-box is-invite">
+                    <div className="member-action-copy">
+                      <strong>Voce foi convidado para esta escala.</strong>
+                      <span>Confirme sua presenca ou recuse o convite.</span>
+                    </div>
+                    <div className="inline-actions member-inline-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={
+                          respondingAssignmentId ===
+                          memberSchedule.assignment.id
+                        }
+                        onClick={() =>
+                          void onRespond(
+                            memberSchedule.assignment.id,
+                            "confirmed",
+                          )
+                        }
+                        type="button"
+                      >
+                        Confirmar
+                      </button>
+                      <button
+                        className="danger-button"
+                        disabled={
+                          respondingAssignmentId ===
+                          memberSchedule.assignment.id
+                        }
+                        onClick={() =>
+                          void onRespond(
+                            memberSchedule.assignment.id,
+                            "declined",
+                          )
+                        }
+                        type="button"
+                      >
+                        Recusar
+                      </button>
+                    </div>
                   </div>
                 ) : null}
 
                 {canRequestReplacement ? (
-                  <div className="replacement-request-form">
+                  <div className="member-action-box replacement-request-form">
+                    <div className="member-action-copy">
+                      <strong>Precisa pedir substituicao?</strong>
+                      <span>
+                        O gestor acompanha o pedido e chama uma pessoa
+                        disponivel.
+                      </span>
+                    </div>
                     <label>
                       Motivo opcional
                       <textarea
