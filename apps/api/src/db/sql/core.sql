@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS core.global_users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   email text NOT NULL UNIQUE,
   display_name text NOT NULL,
+  password_hash text,
   status text NOT NULL DEFAULT 'active',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -35,6 +36,23 @@ CREATE TABLE IF NOT EXISTS core.global_users (
     status IN ('active', 'disabled')
   )
 );
+
+ALTER TABLE core.global_users
+  ADD COLUMN IF NOT EXISTS password_hash text;
+
+CREATE TABLE IF NOT EXISTS core.auth_sessions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES core.global_users (id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS auth_sessions_active_token_idx
+  ON core.auth_sessions (token_hash, expires_at)
+  WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS core.tenant_user_memberships (
   tenant_id uuid NOT NULL REFERENCES core.tenants (id),

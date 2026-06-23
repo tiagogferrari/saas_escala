@@ -46,7 +46,10 @@ function mapTenant(row: TenantRow): Tenant {
   };
 }
 
-async function insertTenant(client: PoolClient, input: CreateTenantInput) {
+export async function insertTenant(
+  client: PoolClient,
+  input: CreateTenantInput,
+) {
   const id = randomUUID();
   const schemaName = createTenantSchemaName(id);
 
@@ -87,12 +90,17 @@ async function insertTenant(client: PoolClient, input: CreateTenantInput) {
   return mapTenant(tenant);
 }
 
-export async function createTenant(input: CreateTenantInput) {
+export async function createTenant(input: CreateTenantInput, userId: string) {
   const client = await pool.connect();
 
   try {
     await client.query("begin");
     const tenant = await insertTenant(client, input);
+    await client.query(
+      `insert into core.tenant_user_memberships (tenant_id, user_id, role)
+       values ($1, $2, 'tenant_admin')`,
+      [tenant.id, userId],
+    );
     await client.query("commit");
     return tenant;
   } catch (error) {
@@ -103,14 +111,33 @@ export async function createTenant(input: CreateTenantInput) {
   }
 }
 
-export async function listTenants() {
+export async function listTenantsForUser(userId: string) {
   const result = await pool.query<TenantRow>(
     `select id, slug, display_name, schema_name, timezone, locale, status, created_at
-     from core.tenants
-     order by created_at desc`,
+     from core.tenants tenant
+     join core.tenant_user_memberships membership
+       on membership.tenant_id = tenant.id
+     where membership.user_id = $1
+       and tenant.status = 'active'
+     order by tenant.created_at desc`,
+    [userId],
   );
 
   return result.rows.map(mapTenant);
+}
+
+export async function listTenantsForInitialSetup() {
+  const result = await pool.query<Pick<TenantRow, "slug" | "display_name">>(
+    `select slug, display_name
+     from core.tenants
+     where status = 'active'
+     order by created_at asc`,
+  );
+
+  return result.rows.map((tenant) => ({
+    slug: tenant.slug,
+    displayName: tenant.display_name,
+  }));
 }
 
 export async function getTenantBySlug(slug: string) {

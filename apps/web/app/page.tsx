@@ -124,6 +124,19 @@ type MemberAccessLink = {
 
 type ApiStatus = "checking" | "online" | "offline";
 
+type AuthState = "checking" | "setup" | "signed_out" | "authenticated";
+
+type ManagerUser = {
+  id: string;
+  displayName: string;
+  email: string;
+};
+
+type SetupTenant = {
+  slug: string;
+  displayName: string;
+};
+
 type PageSearchParams = Record<string, string | string[] | undefined>;
 
 type HomePageProps = {
@@ -131,6 +144,13 @@ type HomePageProps = {
 };
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3333";
+
+function apiFetch(input: string, init: RequestInit = {}) {
+  return fetch(input, {
+    ...init,
+    credentials: "include",
+  });
+}
 
 function buildMemberAccessUrl(tenantSlug: string, token: string) {
   if (typeof window === "undefined") {
@@ -444,6 +464,18 @@ export default function HomePage({ searchParams }: HomePageProps) {
 
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [dbStatus, setDbStatus] = useState<ApiStatus>("checking");
+  const [authState, setAuthState] = useState<AuthState>("checking");
+  const [managerUser, setManagerUser] = useState<ManagerUser | null>(null);
+  const [setupTenants, setSetupTenants] = useState<SetupTenant[]>([]);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [setupName, setSetupName] = useState("");
+  const [setupEmail, setSetupEmail] = useState("");
+  const [setupPassword, setSetupPassword] = useState("");
+  const [setupTenantSlug, setSetupTenantSlug] = useState("");
+  const [setupTenantName, setSetupTenantName] = useState("");
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selectedTenantSlug, setSelectedTenantSlug] = useState<string | null>(
     () => initialTenantSlug || null,
@@ -538,14 +570,16 @@ export default function HomePage({ searchParams }: HomePageProps) {
 
   async function loadStatus() {
     try {
-      const response = await fetch(`${apiUrl}/health`, { cache: "no-store" });
+      const response = await apiFetch(`${apiUrl}/health`, {
+        cache: "no-store",
+      });
       setApiStatus(response.ok ? "online" : "offline");
     } catch {
       setApiStatus("offline");
     }
 
     try {
-      const response = await fetch(`${apiUrl}/health/db`, {
+      const response = await apiFetch(`${apiUrl}/health/db`, {
         cache: "no-store",
       });
       setDbStatus(response.ok ? "online" : "offline");
@@ -554,17 +588,47 @@ export default function HomePage({ searchParams }: HomePageProps) {
     }
   }
 
-  async function loadTenants() {
+  async function loadSetupStatus() {
     try {
-      const response = await fetch(`${apiUrl}/tenants`, { cache: "no-store" });
+      const response = await apiFetch(`${apiUrl}/auth/setup-status`, {
+        cache: "no-store",
+      });
       if (!response.ok) {
-        throw new Error("Erro ao listar espacos");
+        throw new Error("Erro ao consultar a configuracao inicial");
       }
 
-      const payload = (await response.json()) as { data: Tenant[] };
-      setTenants(payload.data);
+      const payload = (await response.json()) as {
+        data: { needsSetup: boolean; tenants: SetupTenant[] };
+      };
+      const firstTenantSlug = payload.data.tenants[0]?.slug ?? "";
+
+      setSetupTenants(payload.data.tenants);
+      setSetupTenantSlug((currentSlug) => currentSlug || firstTenantSlug);
+      setAuthState(payload.data.needsSetup ? "setup" : "signed_out");
     } catch {
-      setTenants([]);
+      setAuthMessage("Nao foi possivel abrir o acesso do gestor.");
+      setAuthState("signed_out");
+    }
+  }
+
+  async function loadManagerSession() {
+    try {
+      const response = await apiFetch(`${apiUrl}/auth/me`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return false;
+      }
+
+      const payload = (await response.json()) as {
+        data: { user: ManagerUser; tenants: Tenant[] };
+      };
+      setManagerUser(payload.data.user);
+      setTenants(payload.data.tenants);
+      setAuthState("authenticated");
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -575,10 +639,16 @@ export default function HomePage({ searchParams }: HomePageProps) {
       functionsResponse,
       schedulesResponse,
     ] = await Promise.all([
-      fetch(`${apiUrl}/tenants/${tenantSlug}/people`, { cache: "no-store" }),
-      fetch(`${apiUrl}/tenants/${tenantSlug}/locations`, { cache: "no-store" }),
-      fetch(`${apiUrl}/tenants/${tenantSlug}/functions`, { cache: "no-store" }),
-      fetch(`${apiUrl}/tenants/${tenantSlug}/schedules`, { cache: "no-store" }),
+      apiFetch(`${apiUrl}/tenants/${tenantSlug}/people`, { cache: "no-store" }),
+      apiFetch(`${apiUrl}/tenants/${tenantSlug}/locations`, {
+        cache: "no-store",
+      }),
+      apiFetch(`${apiUrl}/tenants/${tenantSlug}/functions`, {
+        cache: "no-store",
+      }),
+      apiFetch(`${apiUrl}/tenants/${tenantSlug}/schedules`, {
+        cache: "no-store",
+      }),
     ]);
 
     if (
@@ -622,11 +692,11 @@ export default function HomePage({ searchParams }: HomePageProps) {
 
     try {
       const response = accessToken
-        ? await fetch(
+        ? await apiFetch(
             `${apiUrl}/tenants/${tenantSlug}/member-access/${accessToken}/schedules`,
             { cache: "no-store" },
           )
-        : await fetch(
+        : await apiFetch(
             `${apiUrl}/tenants/${tenantSlug}/people/${personId}/member-schedules`,
             { cache: "no-store" },
           );
@@ -663,15 +733,24 @@ export default function HomePage({ searchParams }: HomePageProps) {
   }
 
   async function refresh() {
-    await Promise.all([loadStatus(), loadTenants()]);
+    await loadStatus();
+
+    if (memberAccessToken) {
+      return;
+    }
+
+    const hasManagerSession = await loadManagerSession();
+    if (!hasManagerSession) {
+      setManagerUser(null);
+      setTenants([]);
+      await loadSetupStatus();
+      return;
+    }
+
     if (selectedTenantSlug) {
       await loadTenantData(selectedTenantSlug);
-      if (memberAccessToken || memberPersonId) {
-        await loadMemberSchedules(
-          selectedTenantSlug,
-          memberPersonId,
-          memberAccessToken,
-        );
+      if (memberPersonId) {
+        await loadMemberSchedules(selectedTenantSlug, memberPersonId, "");
       }
     }
   }
@@ -679,21 +758,28 @@ export default function HomePage({ searchParams }: HomePageProps) {
   useEffect(() => {
     if (memberAccessToken) {
       setMemberMessage("Acesso do membro carregado por link.");
+      return;
     }
+
+    void refresh();
   }, [memberAccessToken]);
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    const selectedTenantIsAvailable = tenants.some(
+      (tenant) => tenant.slug === selectedTenantSlug,
+    );
 
-  useEffect(() => {
-    if (!selectedTenantSlug && tenants.length > 0) {
+    if (!selectedTenantIsAvailable && tenants.length > 0) {
       setSelectedTenantSlug(tenants[0]?.slug ?? null);
     }
   }, [selectedTenantSlug, tenants]);
 
   useEffect(() => {
-    if (selectedTenantSlug) {
+    if (
+      selectedTenantSlug &&
+      !memberAccessToken &&
+      authState === "authenticated"
+    ) {
       void loadTenantData(selectedTenantSlug).catch(() => {
         setPeople([]);
         setLocations([]);
@@ -702,7 +788,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
         setMemberSchedules([]);
       });
     }
-  }, [selectedTenantSlug]);
+  }, [authState, memberAccessToken, selectedTenantSlug]);
 
   useEffect(() => {
     const hasSelectedLocation = locations.some(
@@ -765,6 +851,102 @@ export default function HomePage({ searchParams }: HomePageProps) {
     }
   }, [memberAccessToken, memberPersonId, selectedTenantSlug]);
 
+  async function submitLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSubmittingAuth(true);
+    setAuthMessage(null);
+
+    try {
+      const response = await apiFetch(`${apiUrl}/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: loginEmail,
+          password: loginPassword,
+        }),
+      });
+
+      if (!response.ok) {
+        setAuthMessage("E-mail ou senha nao conferem.");
+        return;
+      }
+
+      setLoginPassword("");
+      await refresh();
+    } catch {
+      setAuthMessage(
+        "Nao foi possivel entrar. Confira se a API esta disponivel.",
+      );
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  }
+
+  async function submitInitialSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSubmittingAuth(true);
+    setAuthMessage(null);
+
+    try {
+      const response = await apiFetch(`${apiUrl}/auth/setup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          displayName: setupName,
+          email: setupEmail,
+          password: setupPassword,
+          tenantSlug: setupTenantSlug,
+          ...(setupTenants.length === 0
+            ? { tenantDisplayName: setupTenantName }
+            : {}),
+        }),
+      });
+
+      if (response.status === 409) {
+        setAuthMessage(
+          "Esse primeiro acesso ja foi configurado. Entre com suas credenciais.",
+        );
+        setAuthState("signed_out");
+        return;
+      }
+
+      if (!response.ok) {
+        setAuthMessage("Nao foi possivel configurar o primeiro acesso.");
+        return;
+      }
+
+      setSetupPassword("");
+      await refresh();
+    } catch {
+      setAuthMessage(
+        "Nao foi possivel configurar o acesso. Confira se a API esta disponivel.",
+      );
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await apiFetch(`${apiUrl}/auth/logout`, { method: "POST" });
+    } finally {
+      setManagerUser(null);
+      setTenants([]);
+      setPeople([]);
+      setLocations([]);
+      setScheduleFunctions([]);
+      setSchedules([]);
+      setMemberSchedules([]);
+      setSelectedTenantSlug(null);
+      setAuthMessage(null);
+      await loadSetupStatus();
+    }
+  }
+
   function onNameChange(value: string) {
     setDisplayName(value);
     setSlug(slugify(value));
@@ -784,7 +966,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setMessage(null);
 
     try {
-      const response = await fetch(`${apiUrl}/tenants`, {
+      const response = await apiFetch(`${apiUrl}/tenants`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -828,7 +1010,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/people`,
         {
           method: "POST",
@@ -870,7 +1052,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/locations`,
         {
           method: "POST",
@@ -934,7 +1116,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/schedules`,
         {
           method: "POST",
@@ -987,7 +1169,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/schedules/${scheduleId}/assignments`,
         {
           method: "POST",
@@ -1033,7 +1215,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/schedules/${scheduleId}/publish`,
         {
           method: "POST",
@@ -1093,7 +1275,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/people/${personId}/access-links`,
         {
           method: "POST",
@@ -1145,7 +1327,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
 
     try {
       const response = memberAccessToken
-        ? await fetch(
+        ? await apiFetch(
             `${apiUrl}/tenants/${selectedTenantSlug}/member-access/${memberAccessToken}/assignments/${assignmentId}/respond`,
             {
               method: "POST",
@@ -1155,7 +1337,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
               body: JSON.stringify({ status }),
             },
           )
-        : await fetch(
+        : await apiFetch(
             `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/respond`,
             {
               method: "POST",
@@ -1221,7 +1403,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
 
     try {
       const response = memberAccessToken
-        ? await fetch(
+        ? await apiFetch(
             `${apiUrl}/tenants/${selectedTenantSlug}/member-access/${memberAccessToken}/assignments/${assignmentId}/replacement-requests`,
             {
               method: "POST",
@@ -1233,7 +1415,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
               }),
             },
           )
-        : await fetch(
+        : await apiFetch(
             `${apiUrl}/tenants/${selectedTenantSlug}/people/${memberPersonId}/assignments/${assignmentId}/replacement-requests`,
             {
               method: "POST",
@@ -1312,7 +1494,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/replacement-requests/${replacementRequestId}/candidates`,
         {
           method: "POST",
@@ -1362,7 +1544,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
     setWorkspaceMessage(null);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${apiUrl}/tenants/${selectedTenantSlug}/replacement-requests/${replacementRequestId}/complete`,
         {
           method: "POST",
@@ -1441,25 +1623,52 @@ export default function HomePage({ searchParams }: HomePageProps) {
     );
   }
 
+  if (authState !== "authenticated") {
+    return (
+      <ManagerAccessPanel
+        authMessage={authMessage}
+        authState={authState}
+        isSubmitting={isSubmittingAuth}
+        loginEmail={loginEmail}
+        loginPassword={loginPassword}
+        onLoginEmailChange={setLoginEmail}
+        onLoginPasswordChange={setLoginPassword}
+        onLoginSubmit={submitLogin}
+        onSetupEmailChange={setSetupEmail}
+        onSetupNameChange={setSetupName}
+        onSetupPasswordChange={setSetupPassword}
+        onSetupSubmit={submitInitialSetup}
+        onSetupTenantNameChange={setSetupTenantName}
+        onSetupTenantSlugChange={setSetupTenantSlug}
+        setupEmail={setupEmail}
+        setupName={setupName}
+        setupPassword={setupPassword}
+        setupTenantName={setupTenantName}
+        setupTenantSlug={setupTenantSlug}
+        setupTenants={setupTenants}
+      />
+    );
+  }
+
   return (
     <main className="shell">
       <section className="hero">
         <div>
           <p className="eyebrow">SaaS Escala</p>
-          <h1>Gestao inteligente de escalas e voluntariado</h1>
+          <h1>Painel do gestor</h1>
           <p className="hero-copy">
-            Painel inicial para validar espacos, pessoas, locais e as primeiras
-            escalas em rascunho.
+            Organize pessoas, locais e escalas com acesso separado para cada
+            espaco.
           </p>
         </div>
 
         <div className="hero-card">
-          <span className="hero-card-label">Fluxo atual</span>
-          <strong>Criar espaco, cadastrar base e montar rascunho.</strong>
-          <p>
-            A confirmacao e os convites entram no proximo passo, em cima de uma
-            escala real.
-          </p>
+          <span className="hero-card-label">Gestor conectado</span>
+          <strong>{managerUser?.displayName}</strong>
+          <p>{managerUser?.email}</p>
+          <button className="ghost-button" onClick={() => void logout()}>
+            Sair
+          </button>
         </div>
       </section>
 
@@ -1916,6 +2125,201 @@ export default function HomePage({ searchParams }: HomePageProps) {
             </div>
           </>
         ) : null}
+      </section>
+    </main>
+  );
+}
+
+function ManagerAccessPanel({
+  authMessage,
+  authState,
+  isSubmitting,
+  loginEmail,
+  loginPassword,
+  onLoginEmailChange,
+  onLoginPasswordChange,
+  onLoginSubmit,
+  onSetupEmailChange,
+  onSetupNameChange,
+  onSetupPasswordChange,
+  onSetupSubmit,
+  onSetupTenantNameChange,
+  onSetupTenantSlugChange,
+  setupEmail,
+  setupName,
+  setupPassword,
+  setupTenantName,
+  setupTenantSlug,
+  setupTenants,
+}: {
+  authMessage: string | null;
+  authState: AuthState;
+  isSubmitting: boolean;
+  loginEmail: string;
+  loginPassword: string;
+  onLoginEmailChange: (value: string) => void;
+  onLoginPasswordChange: (value: string) => void;
+  onLoginSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onSetupEmailChange: (value: string) => void;
+  onSetupNameChange: (value: string) => void;
+  onSetupPasswordChange: (value: string) => void;
+  onSetupSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onSetupTenantNameChange: (value: string) => void;
+  onSetupTenantSlugChange: (value: string) => void;
+  setupEmail: string;
+  setupName: string;
+  setupPassword: string;
+  setupTenantName: string;
+  setupTenantSlug: string;
+  setupTenants: SetupTenant[];
+}) {
+  const isSetup = authState === "setup";
+  const isLoading = authState === "checking";
+
+  return (
+    <main className="manager-access-shell">
+      <section className="manager-access-intro">
+        <p className="eyebrow">SaaS Escala</p>
+        <h1>Escalas em ordem.</h1>
+        <p>
+          Entre para organizar o trabalho do seu espaco e acompanhar as
+          confirmacoes.
+        </p>
+      </section>
+
+      <section className="manager-access-panel">
+        {isLoading ? (
+          <div className="manager-access-loading">
+            <span className="hero-card-label">Verificando acesso</span>
+            <strong>Carregando seu ambiente.</strong>
+          </div>
+        ) : isSetup ? (
+          <form onSubmit={onSetupSubmit}>
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Primeiro acesso</p>
+                <h2>Configurar gestor</h2>
+              </div>
+            </div>
+
+            <label>
+              Seu nome
+              <input
+                autoComplete="name"
+                onChange={(event) => onSetupNameChange(event.target.value)}
+                required
+                value={setupName}
+              />
+            </label>
+
+            <label>
+              E-mail
+              <input
+                autoComplete="email"
+                onChange={(event) => onSetupEmailChange(event.target.value)}
+                required
+                type="email"
+                value={setupEmail}
+              />
+            </label>
+
+            <label>
+              Senha
+              <input
+                autoComplete="new-password"
+                minLength={12}
+                onChange={(event) => onSetupPasswordChange(event.target.value)}
+                required
+                type="password"
+                value={setupPassword}
+              />
+            </label>
+
+            {setupTenants.length > 0 ? (
+              <label>
+                Espaco
+                <select
+                  onChange={(event) =>
+                    onSetupTenantSlugChange(event.target.value)
+                  }
+                  required
+                  value={setupTenantSlug}
+                >
+                  {setupTenants.map((tenant) => (
+                    <option key={tenant.slug} value={tenant.slug}>
+                      {tenant.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <>
+                <label>
+                  Nome do espaco
+                  <input
+                    onChange={(event) =>
+                      onSetupTenantNameChange(event.target.value)
+                    }
+                    required
+                    value={setupTenantName}
+                  />
+                </label>
+                <label>
+                  Identificador do espaco
+                  <input
+                    onChange={(event) =>
+                      onSetupTenantSlugChange(slugify(event.target.value))
+                    }
+                    pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
+                    required
+                    value={setupTenantSlug}
+                  />
+                </label>
+              </>
+            )}
+
+            <button className="primary-button" disabled={isSubmitting}>
+              {isSubmitting ? "Configurando..." : "Criar acesso"}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={onLoginSubmit}>
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Acesso do gestor</p>
+                <h2>Entrar</h2>
+              </div>
+            </div>
+
+            <label>
+              E-mail
+              <input
+                autoComplete="email"
+                onChange={(event) => onLoginEmailChange(event.target.value)}
+                required
+                type="email"
+                value={loginEmail}
+              />
+            </label>
+
+            <label>
+              Senha
+              <input
+                autoComplete="current-password"
+                onChange={(event) => onLoginPasswordChange(event.target.value)}
+                required
+                type="password"
+                value={loginPassword}
+              />
+            </label>
+
+            <button className="primary-button" disabled={isSubmitting}>
+              {isSubmitting ? "Entrando..." : "Entrar"}
+            </button>
+          </form>
+        )}
+
+        {authMessage ? <p className="form-message">{authMessage}</p> : null}
       </section>
     </main>
   );
@@ -2463,7 +2867,7 @@ function MemberPortal({
                   <div>
                     <span>Escala</span>
                     <strong>
-                    {scheduleStatusLabel(memberSchedule.schedule.status)}
+                      {scheduleStatusLabel(memberSchedule.schedule.status)}
                     </strong>
                   </div>
                 </div>

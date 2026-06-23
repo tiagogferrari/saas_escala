@@ -3,6 +3,11 @@ import helmet from "@fastify/helmet";
 import Fastify from "fastify";
 import { z, ZodError } from "zod";
 import "./config/load-env";
+import {
+  requireManagerSession,
+  requireTenantManagementAccess,
+} from "./auth/auth-context";
+import { authRoutes } from "./auth/auth-routes";
 import { checkDatabase } from "./db/pool";
 import { locationRoutes } from "./locations/location-routes";
 import { memberAccessRoutes } from "./member-access/member-access-routes";
@@ -27,8 +32,44 @@ const app = Fastify({
 
 await app.register(cors, {
   origin: true,
+  credentials: true,
 });
 await app.register(helmet);
+app.decorateRequest("managerAuth", null);
+
+app.addHook("preHandler", async (request, reply) => {
+  const pathname = (request.raw.url ?? "").split("?")[0] ?? "";
+  const isPublicRoute =
+    pathname === "/" ||
+    pathname.startsWith("/health") ||
+    pathname.startsWith("/auth/") ||
+    /^\/tenants\/[^/]+\/member-access\/[^/]+\/(schedules|assignments\/[^/]+\/(respond|replacement-requests))$/.test(
+      pathname,
+    );
+
+  if (isPublicRoute || !pathname.startsWith("/tenants")) {
+    return;
+  }
+
+  const user = await requireManagerSession(request, reply);
+  if (!user) {
+    return reply;
+  }
+
+  const tenantSlug = pathname.match(/^\/tenants\/([^/]+)/)?.[1];
+  if (!tenantSlug) {
+    return;
+  }
+
+  const allowed = await requireTenantManagementAccess(
+    user,
+    decodeURIComponent(tenantSlug),
+    reply,
+  );
+  if (!allowed) {
+    return reply;
+  }
+});
 
 app.setErrorHandler((error, _request, reply) => {
   if (error instanceof ZodError) {
@@ -59,6 +100,7 @@ app.get("/", async () => ({
 }));
 
 await app.register(tenantRoutes);
+await app.register(authRoutes);
 await app.register(peopleRoutes);
 await app.register(locationRoutes);
 await app.register(scheduleFunctionRoutes);
