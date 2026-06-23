@@ -146,6 +146,33 @@ CREATE TABLE IF NOT EXISTS ${schema}.assignments (
 CREATE INDEX IF NOT EXISTS assignments_slot_idx ON ${schema}.assignments (schedule_slot_id);
 CREATE INDEX IF NOT EXISTS assignments_assignee_idx ON ${schema}.assignments (assignee_type, assignee_id);
 
+CREATE TABLE IF NOT EXISTS ${schema}.notification_deliveries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  assignment_id uuid NOT NULL REFERENCES ${schema}.assignments (id) ON DELETE CASCADE,
+  person_id uuid NOT NULL REFERENCES ${schema}.people (id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  delivery_key text UNIQUE,
+  recipient_email text NOT NULL,
+  subject text NOT NULL,
+  status text NOT NULL DEFAULT 'queued',
+  failure_reason text,
+  sent_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT notification_deliveries_kind_check CHECK (
+    kind IN ('schedule_invitation', 'schedule_reminder_24h')
+  ),
+  CONSTRAINT notification_deliveries_status_check CHECK (
+    status IN ('queued', 'sent', 'failed')
+  )
+);
+
+CREATE INDEX IF NOT EXISTS notification_deliveries_assignment_idx
+  ON ${schema}.notification_deliveries (assignment_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS notification_deliveries_status_idx
+  ON ${schema}.notification_deliveries (status, created_at);
+
 CREATE TABLE IF NOT EXISTS ${schema}.replacement_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   assignment_id uuid NOT NULL REFERENCES ${schema}.assignments (id),

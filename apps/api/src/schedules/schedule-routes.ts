@@ -2,6 +2,11 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { resolveTenantContext } from "../tenant-context/tenant-context";
 import {
+  NotificationError,
+  resendScheduleInvitation,
+  sendScheduleInvitations,
+} from "../notifications/notification-service";
+import {
   completeReplacementRequest,
   createReplacementRequest,
   createScheduleAssignment,
@@ -24,6 +29,10 @@ const tenantParamsSchema = z.object({
 
 const scheduleParamsSchema = tenantParamsSchema.extend({
   scheduleId: z.string().uuid(),
+});
+
+const assignmentInvitationParamsSchema = scheduleParamsSchema.extend({
+  assignmentId: z.string().uuid(),
 });
 
 const memberParamsSchema = tenantParamsSchema.extend({
@@ -233,6 +242,20 @@ function sendPublicationError(
   });
 }
 
+function sendNotificationError(error: NotificationError, reply: FastifyReply) {
+  if (error.code === "person_without_email") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Cadastre um e-mail para enviar o convite.",
+    });
+  }
+
+  return reply.code(409).send({
+    error: error.code,
+    message: "Esse convite nao pode mais ser enviado.",
+  });
+}
+
 export async function scheduleRoutes(app: FastifyInstance) {
   app.get("/tenants/:tenantSlug/schedules", async (request, reply) => {
     const params = tenantParamsSchema.parse(request.params);
@@ -275,13 +298,48 @@ export async function scheduleRoutes(app: FastifyInstance) {
           context.schema,
           params.scheduleId,
         );
+        const notifications = await sendScheduleInvitations(
+          context.schema,
+          context.tenant,
+          schedule.id,
+        );
 
         return {
-          data: schedule,
+          data: {
+            schedule,
+            notifications,
+          },
         };
       } catch (error) {
         if (error instanceof SchedulePublicationError) {
           return sendPublicationError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/tenants/:tenantSlug/schedules/:scheduleId/assignments/:assignmentId/invitations",
+    async (request, reply) => {
+      const params = assignmentInvitationParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      try {
+        return {
+          data: await resendScheduleInvitation(
+            context.schema,
+            context.tenant,
+            params.assignmentId,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof NotificationError) {
+          return sendNotificationError(error, reply);
         }
 
         throw error;
@@ -471,8 +529,18 @@ export async function scheduleRoutes(app: FastifyInstance) {
           input,
         );
 
+        const notifications =
+          input.status === "invited"
+            ? await sendScheduleInvitations(
+                context.schema,
+                context.tenant,
+                params.scheduleId,
+              )
+            : null;
+
         return reply.code(201).send({
           data: assignment,
+          notifications,
         });
       } catch (error) {
         if (error instanceof ScheduleAssignmentError) {

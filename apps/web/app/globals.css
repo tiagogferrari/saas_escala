@@ -689,6 +689,28 @@ dd {
   margin-top: 4px;
 }
 
+.assignment-notification {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.assignment-notification small {
+  color: var(--color-muted);
+  margin: 0;
+}
+
+.assignment-notification small.is-failed {
+  color: var(--color-danger);
+}
+
+.assignment-notification .ghost-button {
+  font-size: 0.8rem;
+  padding: 0.45rem 0.6rem;
+}
+
 .assignment-status {
   color: var(--color-muted);
   font-size: 0.85rem;

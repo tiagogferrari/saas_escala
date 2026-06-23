@@ -140,6 +140,17 @@ export async function listTenantsForInitialSetup() {
   }));
 }
 
+export async function listActiveTenants() {
+  const result = await pool.query<TenantRow>(
+    `select id, slug, display_name, schema_name, timezone, locale, status, created_at
+     from core.tenants
+     where status = 'active'
+     order by created_at asc`,
+  );
+
+  return result.rows.map(mapTenant);
+}
+
 export async function getTenantBySlug(slug: string) {
   const result = await pool.query<TenantRow>(
     `select id, slug, display_name, schema_name, timezone, locale, status, created_at

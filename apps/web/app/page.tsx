@@ -49,6 +49,20 @@ type ReplacementRequest = {
   updatedAt: string;
 };
 
+type NotificationDelivery = {
+  kind: string;
+  status: string;
+  sentAt: string | null;
+  recipientEmail: string;
+};
+
+type NotificationDispatchSummary = {
+  failed: number;
+  queued: number;
+  sent: number;
+  skippedNoEmail: number;
+};
+
 type ScheduleAssignment = {
   id: string;
   scheduleSlotId: string;
@@ -60,6 +74,7 @@ type ScheduleAssignment = {
   confirmationSource: string | null;
   replacementRequestId: string | null;
   replacementRequest: ReplacementRequest | null;
+  notification: NotificationDelivery | null;
   createdAt: string;
 };
 
@@ -276,6 +291,59 @@ function assignmentStatusLabel(status: string) {
   }
 
   return status;
+}
+
+function notificationDeliveryLabel(notification: NotificationDelivery | null) {
+  if (!notification) {
+    return "Convite ainda nao enviado";
+  }
+
+  if (notification.status === "sent") {
+    const label =
+      notification.kind === "schedule_reminder_24h"
+        ? "Lembrete enviado"
+        : "Convite enviado";
+
+    return notification.sentAt
+      ? `${label} em ${formatDate(notification.sentAt)}`
+      : label;
+  }
+
+  if (notification.status === "failed") {
+    return "Falha no envio do e-mail";
+  }
+
+  return "Convite aguardando envio";
+}
+
+function notificationSummaryMessage(summary: NotificationDispatchSummary) {
+  const parts: string[] = [];
+
+  if (summary.sent > 0) {
+    parts.push(
+      summary.sent === 1
+        ? "1 convite enviado"
+        : `${summary.sent} convites enviados`,
+    );
+  }
+
+  if (summary.skippedNoEmail > 0) {
+    parts.push(
+      summary.skippedNoEmail === 1
+        ? "1 pessoa sem e-mail"
+        : `${summary.skippedNoEmail} pessoas sem e-mail`,
+    );
+  }
+
+  if (summary.failed > 0) {
+    parts.push(
+      summary.failed === 1
+        ? "1 envio falhou"
+        : `${summary.failed} envios falharam`,
+    );
+  }
+
+  return parts.length > 0 ? `${parts.join(". ")}.` : "Nenhum convite pendente.";
 }
 
 function replacementRequestStatusLabel(status: string) {
@@ -533,6 +601,8 @@ export default function HomePage({ searchParams }: HomePageProps) {
   const [publishingScheduleId, setPublishingScheduleId] = useState<
     string | null
   >(null);
+  const [resendingInvitationAssignmentId, setResendingInvitationAssignmentId] =
+    useState<string | null>(null);
   const [isLoadingMemberSchedules, setIsLoadingMemberSchedules] =
     useState(false);
   const [respondingAssignmentId, setRespondingAssignmentId] = useState<
@@ -1233,12 +1303,63 @@ export default function HomePage({ searchParams }: HomePageProps) {
         return;
       }
 
-      setWorkspaceMessage("Escala publicada.");
+      const payload = (await response.json()) as {
+        data: {
+          notifications: NotificationDispatchSummary;
+          schedule: ScheduleDraft;
+        };
+      };
+      setWorkspaceMessage(
+        `Escala publicada. ${notificationSummaryMessage(
+          payload.data.notifications,
+        )}`,
+      );
       await loadTenantData(selectedTenantSlug);
     } catch {
       setWorkspaceMessage("API indisponivel ao publicar escala.");
     } finally {
       setPublishingScheduleId(null);
+    }
+  }
+
+  async function resendInvitation(scheduleId: string, assignmentId: string) {
+    if (!selectedTenantSlug) {
+      return;
+    }
+
+    setResendingInvitationAssignmentId(assignmentId);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await apiFetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedules/${scheduleId}/assignments/${assignmentId}/invitations`,
+        {
+          method: "POST",
+        },
+      );
+
+      if (response.status === 409 || response.status === 404) {
+        const payload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(payload.message ?? "Nao foi possivel reenviar.");
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel reenviar o convite.");
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        data: NotificationDispatchSummary;
+      };
+      setWorkspaceMessage(
+        `Convite reenviado. ${notificationSummaryMessage(payload.data)}`,
+      );
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setWorkspaceMessage("API indisponivel ao reenviar convite.");
+    } finally {
+      setResendingInvitationAssignmentId(null);
     }
   }
 
@@ -2080,9 +2201,11 @@ export default function HomePage({ searchParams }: HomePageProps) {
               onInviteReplacementCandidate={inviteReplacementCandidate}
               onPublishSchedule={publishSchedule}
               onReplacementCandidateChange={updateReplacementCandidate}
+              onResendInvitation={resendInvitation}
               people={people}
               publishingScheduleId={publishingScheduleId}
               replacementCandidateByRequest={replacementCandidateByRequest}
+              resendingInvitationAssignmentId={resendingInvitationAssignmentId}
               schedules={schedules}
             />
 
@@ -2353,9 +2476,11 @@ function SchedulePanel({
   onInviteReplacementCandidate,
   onPublishSchedule,
   onReplacementCandidateChange,
+  onResendInvitation,
   people,
   publishingScheduleId,
   replacementCandidateByRequest,
+  resendingInvitationAssignmentId,
   schedules,
 }: {
   completingReplacementRequestId: string | null;
@@ -2367,9 +2492,14 @@ function SchedulePanel({
     replacementRequestId: string,
     personId: string,
   ) => void;
+  onResendInvitation: (
+    scheduleId: string,
+    assignmentId: string,
+  ) => Promise<void>;
   people: Person[];
   publishingScheduleId: string | null;
   replacementCandidateByRequest: Record<string, string>;
+  resendingInvitationAssignmentId: string | null;
   schedules: ScheduleDraft[];
 }) {
   return (
@@ -2398,9 +2528,11 @@ function SchedulePanel({
               onInviteReplacementCandidate={onInviteReplacementCandidate}
               onPublishSchedule={onPublishSchedule}
               onReplacementCandidateChange={onReplacementCandidateChange}
+              onResendInvitation={onResendInvitation}
               people={people}
               publishingScheduleId={publishingScheduleId}
               replacementCandidateByRequest={replacementCandidateByRequest}
+              resendingInvitationAssignmentId={resendingInvitationAssignmentId}
               schedule={schedule}
               schedules={schedules}
             />
@@ -2418,9 +2550,11 @@ function ScheduleCard({
   onInviteReplacementCandidate,
   onPublishSchedule,
   onReplacementCandidateChange,
+  onResendInvitation,
   people,
   publishingScheduleId,
   replacementCandidateByRequest,
+  resendingInvitationAssignmentId,
   schedule,
   schedules,
 }: {
@@ -2433,9 +2567,14 @@ function ScheduleCard({
     replacementRequestId: string,
     personId: string,
   ) => void;
+  onResendInvitation: (
+    scheduleId: string,
+    assignmentId: string,
+  ) => Promise<void>;
   people: Person[];
   publishingScheduleId: string | null;
   replacementCandidateByRequest: Record<string, string>;
+  resendingInvitationAssignmentId: string | null;
   schedule: ScheduleDraft;
   schedules: ScheduleDraft[];
 }) {
@@ -2572,6 +2711,34 @@ function ScheduleCard({
                           linkedReplacementRequest.status,
                         )}
                       </small>
+                    ) : null}
+                    {schedule.status === "published" &&
+                    assignment.status === "invited" ? (
+                      <div className="assignment-notification">
+                        <small
+                          className={
+                            assignment.notification?.status === "failed"
+                              ? "is-failed"
+                              : ""
+                          }
+                        >
+                          {notificationDeliveryLabel(assignment.notification)}
+                        </small>
+                        <button
+                          className="ghost-button"
+                          disabled={
+                            resendingInvitationAssignmentId === assignment.id
+                          }
+                          onClick={() =>
+                            void onResendInvitation(schedule.id, assignment.id)
+                          }
+                          type="button"
+                        >
+                          {resendingInvitationAssignmentId === assignment.id
+                            ? "Enviando..."
+                            : "Reenviar convite"}
+                        </button>
+                      </div>
                     ) : null}
                   </div>
 

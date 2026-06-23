@@ -11,6 +11,7 @@ import { authRoutes } from "./auth/auth-routes";
 import { checkDatabase } from "./db/pool";
 import { locationRoutes } from "./locations/location-routes";
 import { memberAccessRoutes } from "./member-access/member-access-routes";
+import { startNotificationScheduler } from "./notifications/notification-scheduler";
 import { peopleRoutes } from "./people/people-routes";
 import { scheduleFunctionRoutes } from "./schedule-functions/function-routes";
 import { scheduleRoutes } from "./schedules/schedule-routes";
@@ -106,6 +107,7 @@ await app.register(locationRoutes);
 await app.register(scheduleFunctionRoutes);
 await app.register(scheduleRoutes);
 await app.register(memberAccessRoutes);
+startNotificationScheduler(app);
 
 try {
   await app.listen({ host: env.API_HOST, port: env.API_PORT });

@@ -12,7 +12,15 @@ export type ScheduleAssignment = {
   confirmationSource: string | null;
   replacementRequestId: string | null;
   replacementRequest: ReplacementRequest | null;
+  notification: NotificationDelivery | null;
   createdAt: string;
+};
+
+export type NotificationDelivery = {
+  kind: string;
+  status: string;
+  sentAt: string | null;
+  recipientEmail: string;
 };
 
 export type ReplacementRequest = {
@@ -130,6 +138,10 @@ type ScheduleAssignmentRow = {
   replacement_request_urgent: boolean | null;
   replacement_request_created_at: Date | null;
   replacement_request_updated_at: Date | null;
+  notification_kind: string | null;
+  notification_status: string | null;
+  notification_sent_at: Date | null;
+  notification_recipient_email: string | null;
 };
 
 type MemberScheduleRow = {
@@ -273,6 +285,7 @@ function mapMemberSchedule(
         created_at: row.replacement_request_created_at,
         updated_at: row.replacement_request_updated_at,
       }),
+      notification: null,
       createdAt: row.assignment_created_at.toISOString(),
     },
     schedule: {
@@ -345,7 +358,27 @@ function mapScheduleAssignment(row: ScheduleAssignmentRow): ScheduleAssignment {
       created_at: row.replacement_request_created_at,
       updated_at: row.replacement_request_updated_at,
     }),
+    notification: mapNotificationDelivery(row),
     createdAt: row.created_at.toISOString(),
+  };
+}
+
+function mapNotificationDelivery(
+  row: ScheduleAssignmentRow,
+): NotificationDelivery | null {
+  if (
+    !row.notification_kind ||
+    !row.notification_status ||
+    !row.notification_recipient_email
+  ) {
+    return null;
+  }
+
+  return {
+    kind: row.notification_kind,
+    status: row.notification_status,
+    sentAt: row.notification_sent_at?.toISOString() ?? null,
+    recipientEmail: row.notification_recipient_email,
   };
 }
 
@@ -385,7 +418,11 @@ select
   rr.reason as replacement_request_reason,
   rr.urgent as replacement_request_urgent,
   rr.created_at as replacement_request_created_at,
-  rr.updated_at as replacement_request_updated_at
+  rr.updated_at as replacement_request_updated_at,
+  nd.kind as notification_kind,
+  nd.status as notification_status,
+  nd.sent_at as notification_sent_at,
+  nd.recipient_email as notification_recipient_email
 `;
 
 function replacementRequestJoin(schema: string) {
@@ -405,6 +442,21 @@ function replacementRequestJoin(schema: string) {
        order by rr.created_at desc
        limit 1
      ) rr on true`;
+}
+
+function notificationDeliveryJoin(schema: string) {
+  return `
+     left join lateral (
+       select
+         nd.kind,
+         nd.status,
+         nd.sent_at,
+         nd.recipient_email
+       from ${schema}.notification_deliveries nd
+       where nd.assignment_id = a.id
+       order by nd.created_at desc
+       limit 1
+     ) nd on true`;
 }
 
 async function ensureReplacementRequestAssignmentLink(
@@ -464,6 +516,7 @@ async function listAssignmentsBySlotIds(schema: string, slotIds: string[]) {
      left join ${schema}.groups g
        on a.assignee_type = 'group' and g.id = a.assignee_id
      ${replacementRequestJoin(schema)}
+     ${notificationDeliveryJoin(schema)}
      where a.schedule_slot_id = any($1::uuid[])
      order by a.created_at asc`,
     [slotIds],
@@ -493,6 +546,7 @@ async function findAssignmentById(
      left join ${schema}.groups g
        on a.assignee_type = 'group' and g.id = a.assignee_id
      ${replacementRequestJoin(schema)}
+     ${notificationDeliveryJoin(schema)}
      where a.id = $1
      limit 1`,
     [assignmentId],
