@@ -67,6 +67,30 @@ CREATE TABLE IF NOT EXISTS ${schema}.functions (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS ${schema}.schedule_series (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  location_id uuid NOT NULL REFERENCES ${schema}.locations (id),
+  function_id uuid NOT NULL REFERENCES ${schema}.functions (id),
+  anchor_starts_at timestamptz NOT NULL,
+  anchor_ends_at timestamptz NOT NULL,
+  recurrence_interval_weeks integer NOT NULL,
+  recurrence_ends_on date NOT NULL,
+  required_count integer NOT NULL DEFAULT 1,
+  meeting_point text,
+  instructions text,
+  status text NOT NULL DEFAULT 'active',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT schedule_series_interval_check CHECK (recurrence_interval_weeks > 0),
+  CONSTRAINT schedule_series_required_count_check CHECK (required_count > 0),
+  CONSTRAINT schedule_series_range_check CHECK (anchor_starts_at < anchor_ends_at),
+  CONSTRAINT schedule_series_status_check CHECK (status IN ('active', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS schedule_series_status_idx
+  ON ${schema}.schedule_series (status, recurrence_ends_on);
+
 CREATE TABLE IF NOT EXISTS ${schema}.groups (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -116,6 +140,27 @@ CREATE TABLE IF NOT EXISTS ${schema}.schedules (
 
 CREATE INDEX IF NOT EXISTS schedules_time_idx ON ${schema}.schedules (starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS schedules_status_idx ON ${schema}.schedules (status);
+
+ALTER TABLE ${schema}.schedules
+  ADD COLUMN IF NOT EXISTS series_id uuid REFERENCES ${schema}.schedule_series (id);
+
+ALTER TABLE ${schema}.schedules
+  ADD COLUMN IF NOT EXISTS series_occurrence_date date;
+
+CREATE INDEX IF NOT EXISTS schedules_series_occurrence_idx
+  ON ${schema}.schedules (series_id, series_occurrence_date);
+
+CREATE TABLE IF NOT EXISTS ${schema}.schedule_series_exceptions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  series_id uuid NOT NULL REFERENCES ${schema}.schedule_series (id) ON DELETE CASCADE,
+  occurrence_date date NOT NULL,
+  exception_type text NOT NULL DEFAULT 'skipped',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT schedule_series_exceptions_type_check CHECK (
+    exception_type IN ('skipped')
+  ),
+  UNIQUE (series_id, occurrence_date)
+);
 
 CREATE TABLE IF NOT EXISTS ${schema}.schedule_slots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

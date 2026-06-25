@@ -11,6 +11,7 @@ import {
   createReplacementRequest,
   createScheduleAssignment,
   createScheduleDraft,
+  createScheduleSeries,
   inviteReplacementCandidate,
   listMemberSchedules,
   listScheduleAssignments,
@@ -21,6 +22,7 @@ import {
   respondToMemberScheduleAssignment,
   ScheduleAssignmentError,
   SchedulePublicationError,
+  ScheduleSeriesError,
 } from "./schedule-repository";
 
 const tenantParamsSchema = z.object({
@@ -65,6 +67,40 @@ const createScheduleSchema = z
     requiredCount: z.coerce.number().int().min(1).max(50).default(1),
     meetingPoint: optionalTextSchema,
     instructions: optionalTextSchema,
+  })
+  .refine((value) => new Date(value.startsAt) < new Date(value.endsAt), {
+    message: "End date must be after start date.",
+    path: ["endsAt"],
+  });
+
+const occurrenceDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+const createScheduleSeriesSchema = z
+  .object({
+    title: z.string().trim().min(2).max(160),
+    locationId: z.string().uuid(),
+    functionId: z.string().uuid(),
+    startsAt: z.string().datetime(),
+    endsAt: z.string().datetime(),
+    recurrenceIntervalWeeks: z.coerce.number().int().min(1).max(12),
+    recurrenceEndsOn: occurrenceDateSchema,
+    requiredCount: z.coerce.number().int().min(1).max(50).default(1),
+    meetingPoint: optionalTextSchema,
+    instructions: optionalTextSchema,
+    skippedDates: z.array(occurrenceDateSchema).max(104).default([]),
+    defaultAssignmentPersonIds: z.array(z.string().uuid()).max(50).default([]),
+    occurrenceAssignmentOverrides: z
+      .array(
+        z.object({
+          occurrenceDate: occurrenceDateSchema,
+          personIds: z.array(z.string().uuid()).max(50),
+        }),
+      )
+      .max(104)
+      .default([]),
+    assignmentStatus: z
+      .enum(["invited", "externally_confirmed"])
+      .default("invited"),
   })
   .refine((value) => new Date(value.startsAt) < new Date(value.endsAt), {
     message: "End date must be after start date.",
@@ -242,6 +278,37 @@ function sendPublicationError(
   });
 }
 
+function sendScheduleSeriesError(
+  error: ScheduleSeriesError,
+  reply: FastifyReply,
+) {
+  if (error.code === "person_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Uma ou mais pessoas nao estao disponiveis.",
+    });
+  }
+
+  if (error.code === "person_unavailable") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Uma pessoa tem conflito de horario em uma das datas.",
+    });
+  }
+
+  if (error.code === "series_too_large") {
+    return reply.code(400).send({
+      error: error.code,
+      message: "A serie pode gerar no maximo 104 ocorrencias.",
+    });
+  }
+
+  return reply.code(400).send({
+    error: error.code,
+    message: "Confira as datas, excecoes e pessoas da serie.",
+  });
+}
+
 function sendNotificationError(error: NotificationError, reply: FastifyReply) {
   if (error.code === "person_without_email") {
     return reply.code(409).send({
@@ -282,6 +349,27 @@ export async function scheduleRoutes(app: FastifyInstance) {
     return reply.code(201).send({
       data: schedule,
     });
+  });
+
+  app.post("/tenants/:tenantSlug/schedule-series", async (request, reply) => {
+    const params = tenantParamsSchema.parse(request.params);
+    const context = await resolveTenantContext(params.tenantSlug, reply);
+    if (!context) {
+      return;
+    }
+
+    const input = createScheduleSeriesSchema.parse(request.body);
+
+    try {
+      const series = await createScheduleSeries(context.schema, input);
+      return reply.code(201).send({ data: series });
+    } catch (error) {
+      if (error instanceof ScheduleSeriesError) {
+        return sendScheduleSeriesError(error, reply);
+      }
+
+      throw error;
+    }
   });
 
   app.post(

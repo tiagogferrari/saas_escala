@@ -1,6 +1,10 @@
 "use client";
 
 import { FormEvent, use, useEffect, useMemo, useState } from "react";
+import {
+  ScheduleSeriesPanel,
+  type ScheduleSeriesCreatePayload,
+} from "./schedule-series-panel";
 
 type Tenant = {
   id: string;
@@ -80,6 +84,8 @@ type ScheduleAssignment = {
 
 type ScheduleDraft = {
   id: string;
+  seriesId: string | null;
+  occurrenceDate: string | null;
   title: string;
   status: string;
   startsAt: string;
@@ -597,6 +603,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
   const [isSubmittingPerson, setIsSubmittingPerson] = useState(false);
   const [isSubmittingLocation, setIsSubmittingLocation] = useState(false);
   const [isSubmittingSchedule, setIsSubmittingSchedule] = useState(false);
+  const [isSubmittingSeries, setIsSubmittingSeries] = useState(false);
   const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
   const [publishingScheduleId, setPublishingScheduleId] = useState<
     string | null
@@ -1216,6 +1223,68 @@ export default function HomePage({ searchParams }: HomePageProps) {
       setWorkspaceMessage("API indisponivel ao criar escala.");
     } finally {
       setIsSubmittingSchedule(false);
+    }
+  }
+
+  async function createScheduleSeries(payload: ScheduleSeriesCreatePayload) {
+    if (!selectedTenantSlug) {
+      return false;
+    }
+
+    setIsSubmittingSeries(true);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await apiFetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedule-series`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (
+        response.status === 400 ||
+        response.status === 404 ||
+        response.status === 409
+      ) {
+        const errorPayload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(
+          errorPayload.message ?? "Nao foi possivel criar a serie de escalas.",
+        );
+        return false;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel criar a serie de escalas.");
+        return false;
+      }
+
+      const result = (await response.json()) as {
+        data: {
+          occurrenceCount: number;
+          skippedOccurrenceCount: number;
+        };
+      };
+      const { occurrenceCount, skippedOccurrenceCount } = result.data;
+      const skippedMessage =
+        skippedOccurrenceCount > 0
+          ? ` e ${skippedOccurrenceCount} data(s) pulada(s)`
+          : "";
+
+      setWorkspaceMessage(
+        `Serie criada com ${occurrenceCount} rascunho(s)${skippedMessage}.`,
+      );
+      await loadTenantData(selectedTenantSlug);
+      return true;
+    } catch {
+      setWorkspaceMessage("API indisponivel ao criar a serie de escalas.");
+      return false;
+    } finally {
+      setIsSubmittingSeries(false);
     }
   }
 
@@ -1989,6 +2058,14 @@ export default function HomePage({ searchParams }: HomePageProps) {
               </form>
             </div>
 
+            <ScheduleSeriesPanel
+              functions={scheduleFunctions}
+              isSubmitting={isSubmittingSeries}
+              locations={locations}
+              onCreate={createScheduleSeries}
+              people={people}
+            />
+
             <div className="management-grid">
               <form className="panel" onSubmit={createSchedule}>
                 <div className="panel-header">
@@ -2602,6 +2679,7 @@ function ScheduleCard({
       </p>
       <div className="schedule-meta">
         <span>{schedule.slot.function.name}</span>
+        {schedule.seriesId ? <span>Serie recorrente</span> : null}
         <span>
           {activeAssignmentCount}/{schedule.slot.requiredCount} vaga(s)
         </span>

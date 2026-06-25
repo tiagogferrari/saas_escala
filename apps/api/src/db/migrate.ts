@@ -42,7 +42,7 @@ async function migrateTenantSchemas() {
         `insert into ${schema}.tenant_migrations (id)
          values ($1)
          on conflict (id) do nothing`,
-        ["002_notification_deliveries"],
+        ["003_schedule_series"],
       );
       await pool.query("commit");
     } catch (error) {

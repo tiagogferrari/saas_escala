@@ -36,6 +36,8 @@ export type ReplacementRequest = {
 
 export type ScheduleDraft = {
   id: string;
+  seriesId: string | null;
+  occurrenceDate: string | null;
   title: string;
   status: string;
   startsAt: string;
@@ -55,6 +57,17 @@ export type ScheduleDraft = {
     };
   };
   assignments: ScheduleAssignment[];
+  createdAt: string;
+};
+
+export type ScheduleSeries = {
+  id: string;
+  title: string;
+  recurrenceIntervalWeeks: number;
+  recurrenceEndsOn: string;
+  occurrenceCount: number;
+  skippedOccurrenceCount: number;
+  schedules: ScheduleDraft[];
   createdAt: string;
 };
 
@@ -98,6 +111,26 @@ export type CreateScheduleAssignmentInput = {
   status: "invited" | "externally_confirmed";
 };
 
+export type CreateScheduleSeriesInput = {
+  title: string;
+  locationId: string;
+  functionId: string;
+  startsAt: string;
+  endsAt: string;
+  recurrenceIntervalWeeks: number;
+  recurrenceEndsOn: string;
+  requiredCount: number;
+  meetingPoint?: string | null;
+  instructions?: string | null;
+  skippedDates?: string[];
+  defaultAssignmentPersonIds?: string[];
+  occurrenceAssignmentOverrides?: Array<{
+    occurrenceDate: string;
+    personIds: string[];
+  }>;
+  assignmentStatus: "invited" | "externally_confirmed";
+};
+
 export type CreateReplacementRequestInput = {
   reason?: string | null;
   urgent?: boolean;
@@ -105,6 +138,8 @@ export type CreateReplacementRequestInput = {
 
 type ScheduleDraftRow = {
   schedule_id: string;
+  series_id: string | null;
+  series_occurrence_date: Date | null;
   title: string;
   status: string;
   starts_at: Date;
@@ -198,6 +233,12 @@ type ReplacementRequestManagerErrorCode =
   | "replacement_request_not_open"
   | "schedule_not_assignable";
 
+type ScheduleSeriesErrorCode =
+  | "person_not_found"
+  | "person_unavailable"
+  | "series_invalid"
+  | "series_too_large";
+
 export class ScheduleAssignmentError extends Error {
   constructor(
     public readonly code: ScheduleAssignmentErrorCode,
@@ -234,9 +275,22 @@ export class ReplacementRequestManagerError extends Error {
   }
 }
 
+export class ScheduleSeriesError extends Error {
+  constructor(
+    public readonly code: ScheduleSeriesErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 function mapScheduleDraft(row: ScheduleDraftRow): ScheduleDraft {
   return {
     id: row.schedule_id,
+    seriesId: row.series_id,
+    occurrenceDate: row.series_occurrence_date
+      ? getDateKey(row.series_occurrence_date)
+      : null,
     title: row.title,
     status: row.status,
     startsAt: row.starts_at.toISOString(),
@@ -385,6 +439,8 @@ function mapNotificationDelivery(
 const scheduleSummarySelect = `
 select
   s.id as schedule_id,
+  s.series_id,
+  s.series_occurrence_date,
   s.title,
   s.status,
   s.starts_at,
@@ -480,7 +536,7 @@ async function hasOverlappingActiveAssignment(
   personId: string,
   startsAt: Date,
   endsAt: Date,
-  excludedScheduleId: string,
+  excludedScheduleId: string | null,
 ) {
   const result = await client.query<{ id: string }>(
     `select a.id
@@ -491,7 +547,7 @@ async function hasOverlappingActiveAssignment(
        and a.assignee_id = $1
        and a.status in ('invited', 'pending', 'confirmed', 'externally_confirmed')
        and s.status in ('draft', 'published')
-       and s.id <> $4
+       and ($4::uuid is null or s.id <> $4)
        and s.starts_at < $3
        and s.ends_at > $2
      limit 1`,
@@ -499,6 +555,57 @@ async function hasOverlappingActiveAssignment(
   );
 
   return Boolean(result.rows[0]);
+}
+
+function getDateKey(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function getSeriesOccurrences(input: CreateScheduleSeriesInput) {
+  const startsAt = new Date(input.startsAt);
+  const endsAt = new Date(input.endsAt);
+  const intervalWeeks = input.recurrenceIntervalWeeks;
+
+  if (
+    Number.isNaN(startsAt.getTime()) ||
+    Number.isNaN(endsAt.getTime()) ||
+    startsAt >= endsAt ||
+    intervalWeeks < 1
+  ) {
+    throw new ScheduleSeriesError(
+      "series_invalid",
+      "Schedule series has an invalid recurrence.",
+    );
+  }
+
+  const occurrences: Array<{ startsAt: Date; endsAt: Date; date: string }> = [];
+  const intervalMs = intervalWeeks * 7 * 24 * 60 * 60 * 1000;
+
+  for (let index = 0; index < 104; index += 1) {
+    const occurrenceStartsAt = new Date(
+      startsAt.getTime() + index * intervalMs,
+    );
+    const occurrenceDate = getDateKey(occurrenceStartsAt);
+
+    if (occurrenceDate > input.recurrenceEndsOn) {
+      return occurrences;
+    }
+
+    occurrences.push({
+      startsAt: occurrenceStartsAt,
+      endsAt: new Date(endsAt.getTime() + index * intervalMs),
+      date: occurrenceDate,
+    });
+  }
+
+  throw new ScheduleSeriesError(
+    "series_too_large",
+    "Schedule series exceeds the supported occurrence limit.",
+  );
+}
+
+function uniquePersonIds(personIds: string[]) {
+  return [...new Set(personIds)];
 }
 
 async function listAssignmentsBySlotIds(schema: string, slotIds: string[]) {
@@ -649,6 +756,264 @@ export async function createScheduleDraft(
   } finally {
     client.release();
   }
+}
+
+export async function createScheduleSeries(
+  schema: string,
+  input: CreateScheduleSeriesInput,
+) {
+  const occurrences = getSeriesOccurrences(input);
+  if (occurrences.length === 0) {
+    throw new ScheduleSeriesError(
+      "series_invalid",
+      "Schedule series does not contain any occurrences.",
+    );
+  }
+
+  const occurrenceDates = new Set(
+    occurrences.map((occurrence) => occurrence.date),
+  );
+  const skippedDates = new Set(input.skippedDates ?? []);
+  const defaultAssignmentPersonIds = uniquePersonIds(
+    input.defaultAssignmentPersonIds ?? [],
+  );
+  const assignmentsByOccurrence = new Map<string, string[]>();
+
+  for (const date of skippedDates) {
+    if (!occurrenceDates.has(date)) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Skipped date is not part of the schedule series.",
+      );
+    }
+  }
+
+  for (const override of input.occurrenceAssignmentOverrides ?? []) {
+    if (
+      !occurrenceDates.has(override.occurrenceDate) ||
+      skippedDates.has(override.occurrenceDate) ||
+      assignmentsByOccurrence.has(override.occurrenceDate)
+    ) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Occurrence assignment override is invalid.",
+      );
+    }
+
+    assignmentsByOccurrence.set(
+      override.occurrenceDate,
+      uniquePersonIds(override.personIds),
+    );
+  }
+
+  const allPersonIds = new Set(defaultAssignmentPersonIds);
+  for (const personIds of assignmentsByOccurrence.values()) {
+    for (const personId of personIds) {
+      allPersonIds.add(personId);
+    }
+  }
+
+  const client = await pool.connect();
+  const scheduleIds: string[] = [];
+  let seriesId = "";
+  let seriesCreatedAt = new Date();
+
+  try {
+    await client.query("begin");
+
+    if (allPersonIds.size > 0) {
+      const peopleResult = await client.query<{ id: string }>(
+        `select id
+         from ${schema}.people
+         where id = any($1::uuid[])
+           and status = 'active'`,
+        [[...allPersonIds]],
+      );
+
+      if (peopleResult.rows.length !== allPersonIds.size) {
+        throw new ScheduleSeriesError(
+          "person_not_found",
+          "One or more people are unavailable.",
+        );
+      }
+    }
+
+    const seriesResult = await client.query<{ id: string; created_at: Date }>(
+      `insert into ${schema}.schedule_series (
+        title,
+        location_id,
+        function_id,
+        anchor_starts_at,
+        anchor_ends_at,
+        recurrence_interval_weeks,
+        recurrence_ends_on,
+        required_count,
+        meeting_point,
+        instructions
+      )
+      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      returning id, created_at`,
+      [
+        input.title,
+        input.locationId,
+        input.functionId,
+        input.startsAt,
+        input.endsAt,
+        input.recurrenceIntervalWeeks,
+        input.recurrenceEndsOn,
+        input.requiredCount,
+        input.meetingPoint ?? null,
+        input.instructions ?? null,
+      ],
+    );
+    const series = seriesResult.rows[0];
+    if (!series) {
+      throw new Error("Schedule series insert did not return a series");
+    }
+
+    seriesId = series.id;
+    seriesCreatedAt = series.created_at;
+
+    for (const skippedDate of skippedDates) {
+      await client.query(
+        `insert into ${schema}.schedule_series_exceptions (
+          series_id,
+          occurrence_date
+        )
+        values ($1, $2)`,
+        [seriesId, skippedDate],
+      );
+    }
+
+    for (const occurrence of occurrences) {
+      if (skippedDates.has(occurrence.date)) {
+        continue;
+      }
+
+      const personIds =
+        assignmentsByOccurrence.get(occurrence.date) ??
+        defaultAssignmentPersonIds;
+      if (personIds.length > input.requiredCount) {
+        throw new ScheduleSeriesError(
+          "series_invalid",
+          "An occurrence has more people than available slots.",
+        );
+      }
+
+      for (const personId of personIds) {
+        const hasConflict = await hasOverlappingActiveAssignment(
+          client,
+          schema,
+          personId,
+          occurrence.startsAt,
+          occurrence.endsAt,
+          null,
+        );
+
+        if (hasConflict) {
+          throw new ScheduleSeriesError(
+            "person_unavailable",
+            "A person has a conflicting schedule occurrence.",
+          );
+        }
+      }
+
+      const scheduleResult = await client.query<{ id: string }>(
+        `insert into ${schema}.schedules (
+          series_id,
+          series_occurrence_date,
+          location_id,
+          title,
+          starts_at,
+          ends_at,
+          meeting_point,
+          instructions
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning id`,
+        [
+          seriesId,
+          occurrence.date,
+          input.locationId,
+          input.title,
+          occurrence.startsAt.toISOString(),
+          occurrence.endsAt.toISOString(),
+          input.meetingPoint ?? null,
+          input.instructions ?? null,
+        ],
+      );
+      const schedule = scheduleResult.rows[0];
+      if (!schedule) {
+        throw new Error(
+          "Schedule series occurrence insert did not return a schedule",
+        );
+      }
+
+      const slotResult = await client.query<{ id: string }>(
+        `insert into ${schema}.schedule_slots (
+          schedule_id,
+          function_id,
+          required_count
+        )
+        values ($1, $2, $3)
+        returning id`,
+        [schedule.id, input.functionId, input.requiredCount],
+      );
+      const slot = slotResult.rows[0];
+      if (!slot) {
+        throw new Error(
+          "Schedule series occurrence insert did not return a slot",
+        );
+      }
+
+      const isExternallyConfirmed =
+        input.assignmentStatus === "externally_confirmed";
+      for (const personId of personIds) {
+        await client.query(
+          `insert into ${schema}.assignments (
+            schedule_slot_id,
+            assignee_type,
+            assignee_id,
+            status,
+            confirmed_at,
+            confirmation_source
+          )
+          values ($1, 'person', $2, $3, $4, $5)`,
+          [
+            slot.id,
+            personId,
+            input.assignmentStatus,
+            isExternallyConfirmed ? new Date().toISOString() : null,
+            isExternallyConfirmed ? "manager" : null,
+          ],
+        );
+      }
+
+      scheduleIds.push(schedule.id);
+    }
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const schedules = await Promise.all(
+    scheduleIds.map((scheduleId) => getScheduleDraftById(schema, scheduleId)),
+  );
+
+  return {
+    id: seriesId,
+    title: input.title,
+    recurrenceIntervalWeeks: input.recurrenceIntervalWeeks,
+    recurrenceEndsOn: input.recurrenceEndsOn,
+    occurrenceCount: schedules.length,
+    skippedOccurrenceCount: skippedDates.size,
+    schedules,
+    createdAt: seriesCreatedAt.toISOString(),
+  } satisfies ScheduleSeries;
 }
 
 export async function listScheduleDrafts(schema: string) {
