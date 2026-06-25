@@ -1208,6 +1208,29 @@ dd {
   font-weight: 700;
 }
 
+.series-skipped-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.series-skipped-item {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  color: #9a3412;
+  display: inline-flex;
+  gap: 8px;
+  max-width: 100%;
+  padding: 7px 10px;
+}
+
+.series-skipped-item span {
+  overflow-wrap: anywhere;
+}
+
 .series-calendar-grid {
   display: grid;
   gap: 12px;
@@ -1279,6 +1302,10 @@ button.series-calendar-day.is-skipped {
   text-decoration: line-through;
 }
 
+button.series-calendar-day.is-skipped.has-note {
+  box-shadow: inset 0 -3px 0 #f97316;
+}
+
 button.series-calendar-day.has-override {
   box-shadow: inset 0 -3px 0 #0f766e;
 }
@@ -1293,6 +1320,15 @@ button.series-calendar-day.has-override {
 
 .series-occurrence-editor .series-person-list {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.series-skip-note {
+  margin-top: 14px;
+}
+
+.series-skip-note textarea {
+  min-height: 88px;
+  resize: vertical;
 }
 
 .series-occurrence-actions {

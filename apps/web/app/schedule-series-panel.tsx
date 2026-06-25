@@ -27,7 +27,10 @@ export type ScheduleSeriesCreatePayload = {
   recurrenceIntervalWeeks: number;
   recurrenceEndsOn: string;
   requiredCount: number;
-  skippedDates: string[];
+  skippedOccurrences: Array<{
+    occurrenceDate: string;
+    note: string | null;
+  }>;
   defaultAssignmentPersonIds: string[];
   occurrenceAssignmentOverrides: Array<{
     occurrenceDate: string;
@@ -78,6 +81,13 @@ function toDateKey(date: Date) {
 function formatOccurrenceDate(dateKey: string) {
   return new Intl.DateTimeFormat("pt-BR", {
     dateStyle: "full",
+  }).format(new Date(`${dateKey}T12:00:00`));
+}
+
+function formatOccurrenceShortDate(dateKey: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "short",
   }).format(new Date(`${dateKey}T12:00:00`));
 }
 
@@ -153,7 +163,9 @@ export function ScheduleSeriesPanel({
     "invited" | "externally_confirmed"
   >("invited");
   const [basePersonIds, setBasePersonIds] = useState<string[]>([]);
-  const [skippedDates, setSkippedDates] = useState<Record<string, boolean>>({});
+  const [skippedDates, setSkippedDates] = useState<
+    Record<string, { note: string }>
+  >({});
   const [assignmentOverrides, setAssignmentOverrides] = useState<
     Record<string, string[]>
   >({});
@@ -185,15 +197,26 @@ export function ScheduleSeriesPanel({
   );
   const skippedDateKeys = useMemo(
     () =>
-      Object.entries(skippedDates)
-        .filter(([, isSkipped]) => isSkipped)
-        .map(([date]) => date)
-        .filter((date) => occurrenceDateSet.has(date)),
+      Object.keys(skippedDates).filter((date) => occurrenceDateSet.has(date)),
     [occurrenceDateSet, skippedDates],
+  );
+  const skippedOccurrences = useMemo(
+    () =>
+      skippedDateKeys.map((date) => {
+        const note = skippedDates[date]?.note.trim();
+        return {
+          occurrenceDate: date,
+          note: note ? note : null,
+        };
+      }),
+    [skippedDateKeys, skippedDates],
   );
   const selectedOccurrencePersonIds = selectedOccurrenceDate
     ? (assignmentOverrides[selectedOccurrenceDate] ?? basePersonIds)
     : [];
+  const selectedSkippedDate = selectedOccurrenceDate
+    ? skippedDates[selectedOccurrenceDate]
+    : undefined;
 
   useEffect(() => {
     if (!locations.some((location) => location.id === locationId)) {
@@ -219,18 +242,39 @@ export function ScheduleSeriesPanel({
   }, [occurrenceDateSet, selectedOccurrenceDate]);
 
   function toggleSkippedDate(date: string) {
-    setSkippedDates((currentDates) => ({
-      ...currentDates,
-      [date]: !currentDates[date],
-    }));
+    const isSkippingDate = !skippedDates[date];
 
-    if (!skippedDates[date]) {
+    setSkippedDates((currentDates) => {
+      const nextDates = { ...currentDates };
+      if (nextDates[date]) {
+        delete nextDates[date];
+      } else {
+        nextDates[date] = { note: "" };
+      }
+
+      return nextDates;
+    });
+
+    if (isSkippingDate) {
       setAssignmentOverrides((currentOverrides) => {
         const nextOverrides = { ...currentOverrides };
         delete nextOverrides[date];
         return nextOverrides;
       });
     }
+  }
+
+  function updateSkippedDateNote(date: string, note: string) {
+    setSkippedDates((currentDates) => {
+      if (!currentDates[date]) {
+        return currentDates;
+      }
+
+      return {
+        ...currentDates,
+        [date]: { note },
+      };
+    });
   }
 
   function toggleBasePerson(personId: string) {
@@ -277,7 +321,7 @@ export function ScheduleSeriesPanel({
       recurrenceIntervalWeeks: intervalWeeks,
       recurrenceEndsOn: endsOn,
       requiredCount,
-      skippedDates: skippedDateKeys,
+      skippedOccurrences,
       defaultAssignmentPersonIds: basePersonIds,
       occurrenceAssignmentOverrides: Object.entries(assignmentOverrides)
         .filter(([date]) => occurrenceDateSet.has(date) && !skippedDates[date])
@@ -498,6 +542,20 @@ export function ScheduleSeriesPanel({
         ) : null}
       </div>
 
+      {skippedDateKeys.length > 0 ? (
+        <div className="series-skipped-list">
+          {skippedDateKeys.map((date) => {
+            const note = skippedDates[date]?.note.trim();
+            return (
+              <span className="series-skipped-item" key={date}>
+                <strong>{formatOccurrenceShortDate(date)}</strong>
+                {note ? <span>{note}</span> : <span>Sem observacao</span>}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div className="series-calendar-grid">
         {monthGroups.map((group) => {
           const daysInMonth = new Date(
@@ -537,12 +595,14 @@ export function ScheduleSeriesPanel({
                     new Date(group.year, group.month, day),
                   );
                   const isOccurrence = occurrenceDateSet.has(date);
-                  const isSkipped = skippedDates[date] ?? false;
+                  const isSkipped = Boolean(skippedDates[date]);
+                  const hasSkipNote = Boolean(skippedDates[date]?.note.trim());
                   const hasOverride = Boolean(assignmentOverrides[date]);
                   const className = [
                     "series-calendar-day",
                     isOccurrence ? "is-occurrence" : "",
                     isSkipped ? "is-skipped" : "",
+                    hasSkipNote ? "has-note" : "",
                     selectedOccurrenceDate === date ? "is-selected" : "",
                     hasOverride ? "has-override" : "",
                   ]
@@ -551,7 +611,11 @@ export function ScheduleSeriesPanel({
 
                   return isOccurrence ? (
                     <button
-                      aria-label={formatOccurrenceDate(date)}
+                      aria-label={`${formatOccurrenceDate(date)}${
+                        hasSkipNote
+                          ? `, ${skippedDates[date]?.note.trim()}`
+                          : ""
+                      }`}
                       className={className}
                       key={date}
                       onClick={() => setSelectedOccurrenceDate(date)}
@@ -589,7 +653,23 @@ export function ScheduleSeriesPanel({
             </button>
           </div>
 
-          {!skippedDates[selectedOccurrenceDate] ? (
+          {selectedSkippedDate ? (
+            <label className="series-skip-note">
+              Motivo para pular
+              <textarea
+                maxLength={500}
+                onChange={(event) =>
+                  updateSkippedDateNote(
+                    selectedOccurrenceDate,
+                    event.target.value,
+                  )
+                }
+                placeholder="Ex.: feriado, evento especial, sem encontro"
+                rows={3}
+                value={selectedSkippedDate.note}
+              />
+            </label>
+          ) : (
             <>
               <div className="series-section-header series-occurrence-actions">
                 <strong>Equipe desta data</strong>
@@ -616,7 +696,7 @@ export function ScheduleSeriesPanel({
                 ))}
               </div>
             </>
-          ) : null}
+          )}
         </section>
       ) : null}
 

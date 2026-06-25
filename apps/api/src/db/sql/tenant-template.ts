@@ -155,12 +155,16 @@ CREATE TABLE IF NOT EXISTS ${schema}.schedule_series_exceptions (
   series_id uuid NOT NULL REFERENCES ${schema}.schedule_series (id) ON DELETE CASCADE,
   occurrence_date date NOT NULL,
   exception_type text NOT NULL DEFAULT 'skipped',
+  note text,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT schedule_series_exceptions_type_check CHECK (
     exception_type IN ('skipped')
   ),
   UNIQUE (series_id, occurrence_date)
 );
+
+ALTER TABLE ${schema}.schedule_series_exceptions
+  ADD COLUMN IF NOT EXISTS note text;
 
 CREATE TABLE IF NOT EXISTS ${schema}.schedule_slots (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

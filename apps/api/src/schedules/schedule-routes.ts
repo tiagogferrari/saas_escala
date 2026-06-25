@@ -88,6 +88,15 @@ const createScheduleSeriesSchema = z
     meetingPoint: optionalTextSchema,
     instructions: optionalTextSchema,
     skippedDates: z.array(occurrenceDateSchema).max(104).default([]),
+    skippedOccurrences: z
+      .array(
+        z.object({
+          occurrenceDate: occurrenceDateSchema,
+          note: optionalTextSchema,
+        }),
+      )
+      .max(104)
+      .default([]),
     defaultAssignmentPersonIds: z.array(z.string().uuid()).max(50).default([]),
     occurrenceAssignmentOverrides: z
       .array(

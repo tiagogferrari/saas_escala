@@ -123,6 +123,10 @@ export type CreateScheduleSeriesInput = {
   meetingPoint?: string | null;
   instructions?: string | null;
   skippedDates?: string[];
+  skippedOccurrences?: Array<{
+    occurrenceDate: string;
+    note?: string | null;
+  }>;
   defaultAssignmentPersonIds?: string[];
   occurrenceAssignmentOverrides?: Array<{
     occurrenceDate: string;
@@ -561,6 +565,11 @@ function getDateKey(value: Date) {
   return value.toISOString().slice(0, 10);
 }
 
+function normalizeOptionalText(value?: string | null) {
+  const text = value?.trim();
+  return text ? text : null;
+}
+
 function getSeriesOccurrences(input: CreateScheduleSeriesInput) {
   const startsAt = new Date(input.startsAt);
   const endsAt = new Date(input.endsAt);
@@ -773,7 +782,20 @@ export async function createScheduleSeries(
   const occurrenceDates = new Set(
     occurrences.map((occurrence) => occurrence.date),
   );
-  const skippedDates = new Set(input.skippedDates ?? []);
+  const skippedOccurrences = new Map<string, string | null>();
+
+  for (const date of input.skippedDates ?? []) {
+    skippedOccurrences.set(date, null);
+  }
+
+  for (const occurrence of input.skippedOccurrences ?? []) {
+    skippedOccurrences.set(
+      occurrence.occurrenceDate,
+      normalizeOptionalText(occurrence.note),
+    );
+  }
+
+  const skippedDates = new Set(skippedOccurrences.keys());
   const defaultAssignmentPersonIds = uniquePersonIds(
     input.defaultAssignmentPersonIds ?? [],
   );
@@ -874,14 +896,15 @@ export async function createScheduleSeries(
     seriesId = series.id;
     seriesCreatedAt = series.created_at;
 
-    for (const skippedDate of skippedDates) {
+    for (const [skippedDate, note] of skippedOccurrences) {
       await client.query(
         `insert into ${schema}.schedule_series_exceptions (
           series_id,
-          occurrence_date
+          occurrence_date,
+          note
         )
-        values ($1, $2)`,
-        [seriesId, skippedDate],
+        values ($1, $2, $3)`,
+        [seriesId, skippedDate, note],
       );
     }
 
