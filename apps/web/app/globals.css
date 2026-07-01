@@ -780,7 +780,7 @@ dd {
 .member-portal-summary {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   margin-bottom: 18px;
 }
 
@@ -899,6 +899,11 @@ dd {
   padding: 18px;
 }
 
+.member-schedule-card.is-cancelled {
+  background: #fffafa;
+  border-color: #fecaca;
+}
+
 .member-schedule-card-header {
   align-items: start;
   display: flex;
@@ -982,6 +987,33 @@ dd {
 .member-schedule-card p {
   line-height: 1.45;
   margin: 14px 0 0;
+}
+
+.member-cancelled-box {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-control);
+  color: #991b1b;
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.member-cancelled-box strong,
+.member-cancelled-box span,
+.member-cancelled-box small {
+  color: #991b1b;
+}
+
+.member-cancelled-box span,
+.member-cancelled-box small {
+  line-height: 1.45;
+}
+
+.member-cancelled-box small {
+  font-size: 0.82rem;
+  font-weight: 800;
 }
 
 .companion-list {

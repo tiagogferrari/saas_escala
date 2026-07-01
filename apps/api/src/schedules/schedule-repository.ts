@@ -44,6 +44,8 @@ export type ScheduleDraft = {
   endsAt: string;
   meetingPoint: string | null;
   instructions: string | null;
+  cancelledReason: string | null;
+  cancelledAt: string | null;
   location: {
     id: string;
     name: string;
@@ -109,6 +111,8 @@ export type MemberSchedule = {
     status: string;
     startsAt: string;
     endsAt: string;
+    cancelledReason: string | null;
+    cancelledAt: string | null;
     location: {
       id: string;
       name: string;
@@ -185,6 +189,8 @@ type ScheduleDraftRow = {
   ends_at: Date;
   meeting_point: string | null;
   instructions: string | null;
+  cancelled_reason: string | null;
+  cancelled_at: Date | null;
   location_id: string;
   location_name: string;
   slot_id: string;
@@ -264,6 +270,8 @@ type MemberScheduleRow = {
   schedule_status: string;
   starts_at: Date;
   ends_at: Date;
+  cancelled_reason: string | null;
+  cancelled_at: Date | null;
   location_id: string;
   location_name: string;
   slot_id: string;
@@ -369,6 +377,8 @@ function mapScheduleDraft(row: ScheduleDraftRow): ScheduleDraft {
     endsAt: row.ends_at.toISOString(),
     meetingPoint: row.meeting_point,
     instructions: row.instructions,
+    cancelledReason: row.cancelled_reason,
+    cancelledAt: row.cancelled_at?.toISOString() ?? null,
     location: {
       id: row.location_id,
       name: row.location_name,
@@ -420,6 +430,8 @@ function mapMemberSchedule(
       status: row.schedule_status,
       startsAt: row.starts_at.toISOString(),
       endsAt: row.ends_at.toISOString(),
+      cancelledReason: row.cancelled_reason,
+      cancelledAt: row.cancelled_at?.toISOString() ?? null,
       location: {
         id: row.location_id,
         name: row.location_name,
@@ -519,6 +531,8 @@ select
   s.ends_at,
   s.meeting_point,
   s.instructions,
+  s.cancelled_reason,
+  s.cancelled_at,
   l.id as location_id,
   l.name as location_name,
   ss.id as slot_id,
@@ -1505,6 +1519,8 @@ export async function listMemberSchedules(schema: string, personId: string) {
        s.status as schedule_status,
        s.starts_at,
        s.ends_at,
+       s.cancelled_reason,
+       s.cancelled_at,
        l.id as location_id,
        l.name as location_name,
        ss.id as slot_id,
@@ -1527,8 +1543,10 @@ export async function listMemberSchedules(schema: string, personId: string) {
      ${replacementRequestJoin(schema)}
      where a.assignee_type = 'person'
        and a.assignee_id = $1
-       and a.status <> 'cancelled'
-       and s.status = 'published'
+       and (
+         (s.status = 'published' and a.status <> 'cancelled')
+         or (s.status = 'cancelled' and a.status = 'cancelled')
+       )
      order by s.starts_at asc, s.created_at asc`,
     [personId],
   );
@@ -1539,11 +1557,12 @@ export async function listMemberSchedules(schema: string, personId: string) {
   );
 
   return result.rows.map((row) => {
+    const isScheduleCancelled = row.schedule_status === "cancelled";
     const companions = (assignmentsBySlot.get(row.slot_id) ?? []).filter(
       (assignment) =>
         assignment.id !== row.assignment_id &&
-        assignment.status !== "cancelled" &&
-        assignment.status !== "declined",
+        assignment.status !== "declined" &&
+        (isScheduleCancelled || assignment.status !== "cancelled"),
     );
 
     return mapMemberSchedule(row, companions);

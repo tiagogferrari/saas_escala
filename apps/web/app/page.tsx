@@ -123,6 +123,8 @@ type MemberSchedule = {
     status: string;
     startsAt: string;
     endsAt: string;
+    cancelledReason: string | null;
+    cancelledAt: string | null;
     location: {
       id: string;
       name: string;
@@ -3062,8 +3064,14 @@ function MemberPortal({
     const replacements = memberSchedules.filter(
       (memberSchedule) => memberSchedule.assignment.replacementRequest,
     ).length;
+    const cancellations = memberSchedules.filter(
+      (memberSchedule) =>
+        memberSchedule.schedule.status === "cancelled" ||
+        memberSchedule.assignment.status === "cancelled",
+    ).length;
 
     return {
+      cancellations,
       confirmed,
       invitations,
       replacements,
@@ -3139,6 +3147,10 @@ function MemberPortal({
             <span>Substituicoes</span>
             <strong>{memberSummary.replacements}</strong>
           </div>
+          <div>
+            <span>Canceladas</span>
+            <strong>{memberSummary.cancellations}</strong>
+          </div>
         </div>
       ) : null}
 
@@ -3158,19 +3170,27 @@ function MemberPortal({
       ) : (
         <div className="member-schedule-list">
           {memberSchedules.map((memberSchedule) => {
-            const canRespond = ["invited", "pending"].includes(
-              memberSchedule.assignment.status,
-            );
+            const isScheduleCancelled =
+              memberSchedule.schedule.status === "cancelled" ||
+              memberSchedule.assignment.status === "cancelled";
+            const canRespond =
+              !isScheduleCancelled &&
+              ["invited", "pending"].includes(memberSchedule.assignment.status);
             const replacementRequest =
               memberSchedule.assignment.replacementRequest;
             const canRequestReplacement =
+              !isScheduleCancelled &&
+              memberSchedule.schedule.status === "published" &&
               ["confirmed", "externally_confirmed"].includes(
                 memberSchedule.assignment.status,
-              ) && !replacementRequest;
+              ) &&
+              !replacementRequest;
 
             return (
               <article
-                className="member-schedule-card"
+                className={`member-schedule-card ${
+                  isScheduleCancelled ? "is-cancelled" : ""
+                }`}
                 key={memberSchedule.assignment.id}
               >
                 <header className="member-schedule-card-header">
@@ -3180,10 +3200,14 @@ function MemberPortal({
                   </div>
                   <span
                     className={memberAssignmentPillClassName(
-                      memberSchedule.assignment.status,
+                      isScheduleCancelled
+                        ? "cancelled"
+                        : memberSchedule.assignment.status,
                     )}
                   >
-                    {assignmentStatusLabel(memberSchedule.assignment.status)}
+                    {isScheduleCancelled
+                      ? "Escala cancelada"
+                      : assignmentStatusLabel(memberSchedule.assignment.status)}
                   </span>
                 </header>
 
@@ -3215,13 +3239,33 @@ function MemberPortal({
                   </div>
                 </div>
 
+                {isScheduleCancelled ? (
+                  <div className="member-cancelled-box">
+                    <strong>Esta escala foi cancelada.</strong>
+                    <span>
+                      {memberSchedule.schedule.cancelledReason ??
+                        "O gestor cancelou esta data."}
+                    </span>
+                    {memberSchedule.schedule.cancelledAt ? (
+                      <small>
+                        Cancelada em{" "}
+                        {formatDate(memberSchedule.schedule.cancelledAt)}
+                      </small>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 {memberSchedule.companions.length === 0 ? (
                   <div className="assignment-empty">
-                    Nenhuma outra pessoa escalada no mesmo horario.
+                    {isScheduleCancelled
+                      ? "Nenhuma outra pessoa estava nesta escala."
+                      : "Nenhuma outra pessoa escalada no mesmo horario."}
                   </div>
                 ) : (
                   <div className="companion-list">
-                    <span>Junto com</span>
+                    <span>
+                      {isScheduleCancelled ? "Tambem estava" : "Junto com"}
+                    </span>
                     <div>
                       {memberSchedule.companions.map((companion) => (
                         <strong key={companion.id}>
@@ -3232,7 +3276,7 @@ function MemberPortal({
                   </div>
                 )}
 
-                {replacementRequest ? (
+                {replacementRequest && !isScheduleCancelled ? (
                   <div className="replacement-request-box">
                     <strong>
                       {replacementRequestStatusLabel(replacementRequest.status)}
