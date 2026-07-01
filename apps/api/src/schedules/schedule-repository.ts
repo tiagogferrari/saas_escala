@@ -71,6 +71,36 @@ export type ScheduleSeries = {
   createdAt: string;
 };
 
+export type ScheduleSeriesOccurrence = {
+  occurrenceDate: string;
+  startsAt: string;
+  endsAt: string;
+  scheduleId: string | null;
+  scheduleStatus: string | null;
+  skipped: boolean;
+  exceptionNote: string | null;
+  assignmentCount: number;
+};
+
+export type ScheduleSeriesOverview = {
+  id: string;
+  title: string;
+  status: string;
+  recurrenceIntervalWeeks: number;
+  recurrenceEndsOn: string;
+  requiredCount: number;
+  location: {
+    id: string;
+    name: string;
+  };
+  function: {
+    id: string;
+    name: string;
+  };
+  occurrences: ScheduleSeriesOccurrence[];
+  createdAt: string;
+};
+
 export type MemberSchedule = {
   assignment: ScheduleAssignment;
   schedule: {
@@ -135,6 +165,11 @@ export type CreateScheduleSeriesInput = {
   assignmentStatus: "invited" | "externally_confirmed";
 };
 
+export type UpdateScheduleSeriesOccurrenceInput = {
+  skipped: boolean;
+  note?: string | null;
+};
+
 export type CreateReplacementRequestInput = {
   reason?: string | null;
   urgent?: boolean;
@@ -157,6 +192,38 @@ type ScheduleDraftRow = {
   function_name: string;
   required_count: number;
   created_at: Date;
+};
+
+type ScheduleSeriesRow = {
+  id: string;
+  title: string;
+  status: string;
+  location_id: string;
+  location_name: string;
+  function_id: string;
+  function_name: string;
+  anchor_starts_at: Date;
+  anchor_ends_at: Date;
+  recurrence_interval_weeks: number;
+  recurrence_ends_on: Date;
+  required_count: number;
+  meeting_point: string | null;
+  instructions: string | null;
+  created_at: Date;
+};
+
+type ScheduleSeriesScheduleRow = {
+  series_id: string;
+  occurrence_date: Date;
+  schedule_id: string;
+  schedule_status: string;
+  assignment_count: string;
+};
+
+type ScheduleSeriesExceptionRow = {
+  series_id: string;
+  occurrence_date: Date;
+  note: string | null;
 };
 
 type ScheduleAssignmentRow = {
@@ -241,6 +308,7 @@ type ScheduleSeriesErrorCode =
   | "person_not_found"
   | "person_unavailable"
   | "series_invalid"
+  | "series_not_found"
   | "series_too_large";
 
 export class ScheduleAssignmentError extends Error {
@@ -570,11 +638,12 @@ function normalizeOptionalText(value?: string | null) {
   return text ? text : null;
 }
 
-function getSeriesOccurrences(input: CreateScheduleSeriesInput) {
-  const startsAt = new Date(input.startsAt);
-  const endsAt = new Date(input.endsAt);
-  const intervalWeeks = input.recurrenceIntervalWeeks;
-
+function buildSeriesOccurrences(
+  startsAt: Date,
+  endsAt: Date,
+  intervalWeeks: number,
+  recurrenceEndsOn: string,
+) {
   if (
     Number.isNaN(startsAt.getTime()) ||
     Number.isNaN(endsAt.getTime()) ||
@@ -596,7 +665,7 @@ function getSeriesOccurrences(input: CreateScheduleSeriesInput) {
     );
     const occurrenceDate = getDateKey(occurrenceStartsAt);
 
-    if (occurrenceDate > input.recurrenceEndsOn) {
+    if (occurrenceDate > recurrenceEndsOn) {
       return occurrences;
     }
 
@@ -610,6 +679,24 @@ function getSeriesOccurrences(input: CreateScheduleSeriesInput) {
   throw new ScheduleSeriesError(
     "series_too_large",
     "Schedule series exceeds the supported occurrence limit.",
+  );
+}
+
+function getSeriesOccurrences(input: CreateScheduleSeriesInput) {
+  return buildSeriesOccurrences(
+    new Date(input.startsAt),
+    new Date(input.endsAt),
+    input.recurrenceIntervalWeeks,
+    input.recurrenceEndsOn,
+  );
+}
+
+function getSeriesRowOccurrences(row: ScheduleSeriesRow) {
+  return buildSeriesOccurrences(
+    row.anchor_starts_at,
+    row.anchor_ends_at,
+    row.recurrence_interval_weeks,
+    getDateKey(row.recurrence_ends_on),
   );
 }
 
@@ -689,6 +776,69 @@ async function attachAssignmentsToSchedules(
     ...schedule,
     assignments: assignmentsBySlot.get(schedule.slot.id) ?? [],
   }));
+}
+
+function mapScheduleSeriesOverview(
+  row: ScheduleSeriesRow,
+  schedulesBySeries: Map<string, Map<string, ScheduleSeriesScheduleRow>>,
+  exceptionsBySeries: Map<string, Map<string, string | null>>,
+): ScheduleSeriesOverview {
+  const schedulesByDate = schedulesBySeries.get(row.id) ?? new Map();
+  const exceptionsByDate = exceptionsBySeries.get(row.id) ?? new Map();
+  const occurrences = getSeriesRowOccurrences(row).map((occurrence) => {
+    const schedule = schedulesByDate.get(occurrence.date);
+    const exceptionNote = exceptionsByDate.get(occurrence.date) ?? null;
+
+    return {
+      occurrenceDate: occurrence.date,
+      startsAt: occurrence.startsAt.toISOString(),
+      endsAt: occurrence.endsAt.toISOString(),
+      scheduleId: schedule?.schedule_id ?? null,
+      scheduleStatus: schedule?.schedule_status ?? null,
+      skipped: exceptionsByDate.has(occurrence.date),
+      exceptionNote,
+      assignmentCount: Number(schedule?.assignment_count ?? 0),
+    };
+  });
+
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    recurrenceIntervalWeeks: row.recurrence_interval_weeks,
+    recurrenceEndsOn: getDateKey(row.recurrence_ends_on),
+    requiredCount: row.required_count,
+    location: {
+      id: row.location_id,
+      name: row.location_name,
+    },
+    function: {
+      id: row.function_id,
+      name: row.function_name,
+    },
+    occurrences,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+function addScheduleSeriesScheduleToMap(
+  schedulesBySeries: Map<string, Map<string, ScheduleSeriesScheduleRow>>,
+  row: ScheduleSeriesScheduleRow,
+) {
+  const date = getDateKey(row.occurrence_date);
+  const schedulesByDate = schedulesBySeries.get(row.series_id) ?? new Map();
+  schedulesByDate.set(date, row);
+  schedulesBySeries.set(row.series_id, schedulesByDate);
+}
+
+function addScheduleSeriesExceptionToMap(
+  exceptionsBySeries: Map<string, Map<string, string | null>>,
+  row: ScheduleSeriesExceptionRow,
+) {
+  const date = getDateKey(row.occurrence_date);
+  const exceptionsByDate = exceptionsBySeries.get(row.series_id) ?? new Map();
+  exceptionsByDate.set(date, row.note);
+  exceptionsBySeries.set(row.series_id, exceptionsByDate);
 }
 
 export async function createScheduleDraft(
@@ -1037,6 +1187,277 @@ export async function createScheduleSeries(
     schedules,
     createdAt: seriesCreatedAt.toISOString(),
   } satisfies ScheduleSeries;
+}
+
+export async function listScheduleSeries(schema: string) {
+  const seriesResult = await pool.query<ScheduleSeriesRow>(
+    `select
+       sr.id,
+       sr.title,
+       sr.status,
+       sr.anchor_starts_at,
+       sr.anchor_ends_at,
+       sr.recurrence_interval_weeks,
+       sr.recurrence_ends_on,
+       sr.required_count,
+       sr.meeting_point,
+       sr.instructions,
+       sr.created_at,
+       l.id as location_id,
+       l.name as location_name,
+       f.id as function_id,
+       f.name as function_name
+     from ${schema}.schedule_series sr
+     join ${schema}.locations l on l.id = sr.location_id
+     join ${schema}.functions f on f.id = sr.function_id
+     where sr.status <> 'archived'
+     order by sr.anchor_starts_at asc, sr.created_at asc
+     limit 50`,
+  );
+
+  const seriesIds = seriesResult.rows.map((row) => row.id);
+  if (seriesIds.length === 0) {
+    return [];
+  }
+
+  const schedulesResult = await pool.query<ScheduleSeriesScheduleRow>(
+    `select
+       s.series_id,
+       s.series_occurrence_date as occurrence_date,
+       s.id as schedule_id,
+       s.status as schedule_status,
+       count(a.id) filter (where a.status <> 'cancelled') as assignment_count
+     from ${schema}.schedules s
+     left join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+     left join ${schema}.assignments a on a.schedule_slot_id = ss.id
+     where s.series_id = any($1::uuid[])
+       and s.series_occurrence_date is not null
+     group by s.series_id, s.series_occurrence_date, s.id, s.status`,
+    [seriesIds],
+  );
+
+  const exceptionsResult = await pool.query<ScheduleSeriesExceptionRow>(
+    `select series_id, occurrence_date, note
+     from ${schema}.schedule_series_exceptions
+     where series_id = any($1::uuid[])`,
+    [seriesIds],
+  );
+
+  const schedulesBySeries = new Map<
+    string,
+    Map<string, ScheduleSeriesScheduleRow>
+  >();
+  const exceptionsBySeries = new Map<string, Map<string, string | null>>();
+
+  for (const row of schedulesResult.rows) {
+    addScheduleSeriesScheduleToMap(schedulesBySeries, row);
+  }
+
+  for (const row of exceptionsResult.rows) {
+    addScheduleSeriesExceptionToMap(exceptionsBySeries, row);
+  }
+
+  return seriesResult.rows.map((row) =>
+    mapScheduleSeriesOverview(row, schedulesBySeries, exceptionsBySeries),
+  );
+}
+
+export async function updateScheduleSeriesOccurrence(
+  schema: string,
+  seriesId: string,
+  occurrenceDate: string,
+  input: UpdateScheduleSeriesOccurrenceInput,
+) {
+  const client = await pool.connect();
+  const note = normalizeOptionalText(input.note);
+
+  try {
+    await client.query("begin");
+
+    const seriesResult = await client.query<ScheduleSeriesRow>(
+      `select
+         sr.id,
+         sr.title,
+         sr.status,
+         sr.anchor_starts_at,
+         sr.anchor_ends_at,
+         sr.recurrence_interval_weeks,
+         sr.recurrence_ends_on,
+         sr.required_count,
+         sr.meeting_point,
+         sr.instructions,
+         sr.created_at,
+         l.id as location_id,
+         l.name as location_name,
+         f.id as function_id,
+         f.name as function_name
+       from ${schema}.schedule_series sr
+       join ${schema}.locations l on l.id = sr.location_id
+       join ${schema}.functions f on f.id = sr.function_id
+       where sr.id = $1
+       for update of sr`,
+      [seriesId],
+    );
+
+    const series = seriesResult.rows[0];
+    if (!series) {
+      throw new ScheduleSeriesError(
+        "series_not_found",
+        "Schedule series not found.",
+      );
+    }
+
+    const occurrence = getSeriesRowOccurrences(series).find(
+      (candidate) => candidate.date === occurrenceDate,
+    );
+    if (!occurrence) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Occurrence is not part of the schedule series.",
+      );
+    }
+
+    const scheduleResult = await client.query<{ id: string; status: string }>(
+      `select id, status
+       from ${schema}.schedules
+       where series_id = $1
+         and series_occurrence_date = $2::date
+       for update`,
+      [seriesId, occurrenceDate],
+    );
+    const schedule = scheduleResult.rows[0] ?? null;
+
+    if (input.skipped) {
+      await client.query(
+        `insert into ${schema}.schedule_series_exceptions (
+          series_id,
+          occurrence_date,
+          note
+        )
+        values ($1, $2, $3)
+        on conflict (series_id, occurrence_date)
+        do update set note = excluded.note`,
+        [seriesId, occurrenceDate, note],
+      );
+
+      if (schedule && schedule.status !== "cancelled") {
+        await client.query(
+          `update ${schema}.schedules
+           set status = 'cancelled',
+               cancelled_reason = $2,
+               cancelled_at = now(),
+               updated_at = now()
+           where id = $1`,
+          [schedule.id, note ?? "Data pulada na serie"],
+        );
+
+        await client.query(
+          `update ${schema}.assignments a
+           set status = 'cancelled',
+               updated_at = now()
+           from ${schema}.schedule_slots ss
+           where ss.schedule_id = $1
+             and a.schedule_slot_id = ss.id
+             and a.status <> 'cancelled'`,
+          [schedule.id],
+        );
+
+        await client.query(
+          `update ${schema}.replacement_requests rr
+           set status = 'cancelled',
+               updated_at = now()
+           from ${schema}.assignments a
+           join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+           where ss.schedule_id = $1
+             and rr.assignment_id = a.id
+             and rr.status in (
+               'requested',
+               'under_review',
+               'waiting_response',
+               'accepted'
+             )`,
+          [schedule.id],
+        );
+      }
+    } else {
+      await client.query(
+        `delete from ${schema}.schedule_series_exceptions
+         where series_id = $1
+           and occurrence_date = $2::date`,
+        [seriesId, occurrenceDate],
+      );
+
+      if (!schedule) {
+        const restoredScheduleResult = await client.query<{ id: string }>(
+          `insert into ${schema}.schedules (
+            series_id,
+            series_occurrence_date,
+            location_id,
+            title,
+            starts_at,
+            ends_at,
+            meeting_point,
+            instructions
+          )
+          values ($1, $2, $3, $4, $5, $6, $7, $8)
+          returning id`,
+          [
+            seriesId,
+            occurrenceDate,
+            series.location_id,
+            series.title,
+            occurrence.startsAt.toISOString(),
+            occurrence.endsAt.toISOString(),
+            series.meeting_point,
+            series.instructions,
+          ],
+        );
+        const restoredSchedule = restoredScheduleResult.rows[0];
+        if (!restoredSchedule) {
+          throw new Error("Restored occurrence insert did not return a row");
+        }
+
+        await client.query(
+          `insert into ${schema}.schedule_slots (
+            schedule_id,
+            function_id,
+            required_count
+          )
+          values ($1, $2, $3)`,
+          [restoredSchedule.id, series.function_id, series.required_count],
+        );
+      } else if (schedule.status === "cancelled") {
+        await client.query(
+          `update ${schema}.schedules
+           set status = 'draft',
+               cancelled_reason = null,
+               cancelled_at = null,
+               updated_at = now()
+           where id = $1`,
+          [schedule.id],
+        );
+      }
+    }
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const series = (await listScheduleSeries(schema)).find(
+    (candidate) => candidate.id === seriesId,
+  );
+  if (!series) {
+    throw new ScheduleSeriesError(
+      "series_not_found",
+      "Schedule series not found.",
+    );
+  }
+
+  return series;
 }
 
 export async function listScheduleDrafts(schema: string) {

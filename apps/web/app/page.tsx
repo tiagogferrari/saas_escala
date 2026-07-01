@@ -5,6 +5,11 @@ import {
   ScheduleSeriesPanel,
   type ScheduleSeriesCreatePayload,
 } from "./schedule-series-panel";
+import {
+  ScheduleSeriesManager,
+  type ScheduleSeriesOccurrenceUpdatePayload,
+  type ScheduleSeriesOverview,
+} from "./schedule-series-manager";
 
 type Tenant = {
   id: string;
@@ -81,6 +86,8 @@ type ScheduleAssignment = {
   notification: NotificationDelivery | null;
   createdAt: string;
 };
+
+type AssignmentInitialStatus = "externally_confirmed" | "invited";
 
 type ScheduleDraft = {
   id: string;
@@ -560,6 +567,9 @@ export default function HomePage({ searchParams }: HomePageProps) {
     ScheduleFunction[]
   >([]);
   const [schedules, setSchedules] = useState<ScheduleDraft[]>([]);
+  const [scheduleSeries, setScheduleSeries] = useState<
+    ScheduleSeriesOverview[]
+  >([]);
 
   const [displayName, setDisplayName] = useState("Piloto Marcelo");
   const [slug, setSlug] = useState("piloto-marcelo");
@@ -580,9 +590,8 @@ export default function HomePage({ searchParams }: HomePageProps) {
   const [scheduleRequiredCount, setScheduleRequiredCount] = useState(1);
   const [assignmentScheduleId, setAssignmentScheduleId] = useState("");
   const [assignmentPersonId, setAssignmentPersonId] = useState("");
-  const [assignmentStatus, setAssignmentStatus] = useState<
-    "externally_confirmed" | "invited"
-  >("externally_confirmed");
+  const [assignmentStatus, setAssignmentStatus] =
+    useState<AssignmentInitialStatus>("externally_confirmed");
   const [memberPersonId, setMemberPersonId] = useState("");
   const [memberAccessToken, setMemberAccessToken] = useState(
     () => initialMemberAccessToken,
@@ -605,6 +614,8 @@ export default function HomePage({ searchParams }: HomePageProps) {
   const [isSubmittingSchedule, setIsSubmittingSchedule] = useState(false);
   const [isSubmittingSeries, setIsSubmittingSeries] = useState(false);
   const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
+  const [updatingSeriesOccurrenceKey, setUpdatingSeriesOccurrenceKey] =
+    useState<string | null>(null);
   const [publishingScheduleId, setPublishingScheduleId] = useState<
     string | null
   >(null);
@@ -715,6 +726,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
       locationsResponse,
       functionsResponse,
       schedulesResponse,
+      seriesResponse,
     ] = await Promise.all([
       apiFetch(`${apiUrl}/tenants/${tenantSlug}/people`, { cache: "no-store" }),
       apiFetch(`${apiUrl}/tenants/${tenantSlug}/locations`, {
@@ -726,13 +738,17 @@ export default function HomePage({ searchParams }: HomePageProps) {
       apiFetch(`${apiUrl}/tenants/${tenantSlug}/schedules`, {
         cache: "no-store",
       }),
+      apiFetch(`${apiUrl}/tenants/${tenantSlug}/schedule-series`, {
+        cache: "no-store",
+      }),
     ]);
 
     if (
       !peopleResponse.ok ||
       !locationsResponse.ok ||
       !functionsResponse.ok ||
-      !schedulesResponse.ok
+      !schedulesResponse.ok ||
+      !seriesResponse.ok
     ) {
       throw new Error("Erro ao carregar dados do espaco");
     }
@@ -747,11 +763,15 @@ export default function HomePage({ searchParams }: HomePageProps) {
     const schedulesPayload = (await schedulesResponse.json()) as {
       data: ScheduleDraft[];
     };
+    const seriesPayload = (await seriesResponse.json()) as {
+      data: ScheduleSeriesOverview[];
+    };
 
     setPeople(peoplePayload.data);
     setLocations(locationsPayload.data);
     setScheduleFunctions(functionsPayload.data);
     setSchedules(schedulesPayload.data);
+    setScheduleSeries(seriesPayload.data);
   }
 
   async function loadMemberSchedules(
@@ -862,6 +882,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
         setLocations([]);
         setScheduleFunctions([]);
         setSchedules([]);
+        setScheduleSeries([]);
         setMemberSchedules([]);
       });
     }
@@ -1017,6 +1038,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
       setLocations([]);
       setScheduleFunctions([]);
       setSchedules([]);
+      setScheduleSeries([]);
       setMemberSchedules([]);
       setSelectedTenantSlug(null);
       setAuthMessage(null);
@@ -1288,20 +1310,68 @@ export default function HomePage({ searchParams }: HomePageProps) {
     }
   }
 
-  async function assignPersonToSchedule(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function updateScheduleSeriesOccurrence(
+    seriesId: string,
+    occurrenceDate: string,
+    payload: ScheduleSeriesOccurrenceUpdatePayload,
+  ) {
     if (!selectedTenantSlug) {
       return;
     }
 
-    const scheduleId = assignmentScheduleId || assignableSchedules[0]?.id;
-    const personId = assignmentPersonId || people[0]?.id;
+    const occurrenceKey = `${seriesId}:${occurrenceDate}`;
+    setUpdatingSeriesOccurrenceKey(occurrenceKey);
+    setWorkspaceMessage(null);
 
-    if (!scheduleId || !personId) {
-      setWorkspaceMessage(
-        "Crie uma escala e cadastre uma pessoa antes de escalar.",
+    try {
+      const response = await apiFetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedule-series/${seriesId}/occurrences/${occurrenceDate}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
       );
-      return;
+
+      if (
+        response.status === 400 ||
+        response.status === 404 ||
+        response.status === 409
+      ) {
+        const errorPayload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(
+          errorPayload.message ?? "Nao foi possivel atualizar essa data.",
+        );
+        return;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel atualizar essa data.");
+        return;
+      }
+
+      setWorkspaceMessage(
+        payload.skipped
+          ? "Data da serie atualizada."
+          : "Data restaurada como rascunho.",
+      );
+      await loadTenantData(selectedTenantSlug);
+    } catch {
+      setWorkspaceMessage("API indisponivel ao atualizar a serie.");
+    } finally {
+      setUpdatingSeriesOccurrenceKey(null);
+    }
+  }
+
+  async function assignPersonToScheduleById(
+    scheduleId: string,
+    personId: string,
+    status: AssignmentInitialStatus,
+  ) {
+    if (!selectedTenantSlug) {
+      return false;
     }
 
     setIsSubmittingAssignment(true);
@@ -1317,32 +1387,50 @@ export default function HomePage({ searchParams }: HomePageProps) {
           },
           body: JSON.stringify({
             personId,
-            status: assignmentStatus,
+            status,
           }),
         },
       );
 
-      if (response.status === 409) {
+      if ([400, 404, 409].includes(response.status)) {
         const payload = (await response.json()) as { message?: string };
         setWorkspaceMessage(
           payload.message ??
             "Nao foi possivel escalar essa pessoa nesta escala.",
         );
-        return;
+        return false;
       }
 
       if (!response.ok) {
         setWorkspaceMessage("Nao foi possivel escalar a pessoa.");
-        return;
+        return false;
       }
 
       setWorkspaceMessage("Pessoa escalada.");
       await loadTenantData(selectedTenantSlug);
+      return true;
     } catch {
       setWorkspaceMessage("API indisponivel ao escalar pessoa.");
+      return false;
     } finally {
       setIsSubmittingAssignment(false);
     }
+  }
+
+  async function assignPersonToSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const scheduleId = assignmentScheduleId || assignableSchedules[0]?.id;
+    const personId = assignmentPersonId || people[0]?.id;
+
+    if (!scheduleId || !personId) {
+      setWorkspaceMessage(
+        "Crie uma escala e cadastre uma pessoa antes de escalar.",
+      );
+      return;
+    }
+
+    await assignPersonToScheduleById(scheduleId, personId, assignmentStatus);
   }
 
   async function publishSchedule(scheduleId: string) {
@@ -2066,6 +2154,18 @@ export default function HomePage({ searchParams }: HomePageProps) {
               people={people}
             />
 
+            <ScheduleSeriesManager
+              isAssigning={isSubmittingAssignment}
+              onAssignPerson={assignPersonToScheduleById}
+              onPublishSchedule={publishSchedule}
+              onUpdateOccurrence={updateScheduleSeriesOccurrence}
+              people={people}
+              publishingScheduleId={publishingScheduleId}
+              schedules={schedules}
+              series={scheduleSeries}
+              updatingOccurrenceKey={updatingSeriesOccurrenceKey}
+            />
+
             <div className="management-grid">
               <form className="panel" onSubmit={createSchedule}>
                 <div className="panel-header">
@@ -2242,9 +2342,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
                   <select
                     onChange={(event) =>
                       setAssignmentStatus(
-                        event.target.value as
-                          | "externally_confirmed"
-                          | "invited",
+                        event.target.value as AssignmentInitialStatus,
                       )
                     }
                     value={assignmentStatus}

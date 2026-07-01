@@ -16,6 +16,7 @@ import {
   listMemberSchedules,
   listScheduleAssignments,
   listScheduleDrafts,
+  listScheduleSeries,
   MemberScheduleError,
   publishSchedule,
   ReplacementRequestManagerError,
@@ -23,7 +24,10 @@ import {
   ScheduleAssignmentError,
   SchedulePublicationError,
   ScheduleSeriesError,
+  updateScheduleSeriesOccurrence,
 } from "./schedule-repository";
+
+const occurrenceDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 const tenantParamsSchema = z.object({
   tenantSlug: z.string().min(1),
@@ -31,6 +35,14 @@ const tenantParamsSchema = z.object({
 
 const scheduleParamsSchema = tenantParamsSchema.extend({
   scheduleId: z.string().uuid(),
+});
+
+const scheduleSeriesParamsSchema = tenantParamsSchema.extend({
+  seriesId: z.string().uuid(),
+});
+
+const scheduleSeriesOccurrenceParamsSchema = scheduleSeriesParamsSchema.extend({
+  occurrenceDate: occurrenceDateSchema,
 });
 
 const assignmentInvitationParamsSchema = scheduleParamsSchema.extend({
@@ -73,8 +85,6 @@ const createScheduleSchema = z
     path: ["endsAt"],
   });
 
-const occurrenceDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-
 const createScheduleSeriesSchema = z
   .object({
     title: z.string().trim().min(2).max(160),
@@ -115,6 +125,11 @@ const createScheduleSeriesSchema = z
     message: "End date must be after start date.",
     path: ["endsAt"],
   });
+
+const updateScheduleSeriesOccurrenceSchema = z.object({
+  skipped: z.boolean(),
+  note: optionalTextSchema,
+});
 
 const createAssignmentSchema = z.object({
   personId: z.string().uuid(),
@@ -291,6 +306,13 @@ function sendScheduleSeriesError(
   error: ScheduleSeriesError,
   reply: FastifyReply,
 ) {
+  if (error.code === "series_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Serie de escalas nao encontrada.",
+    });
+  }
+
   if (error.code === "person_not_found") {
     return reply.code(404).send({
       error: error.code,
@@ -360,6 +382,18 @@ export async function scheduleRoutes(app: FastifyInstance) {
     });
   });
 
+  app.get("/tenants/:tenantSlug/schedule-series", async (request, reply) => {
+    const params = tenantParamsSchema.parse(request.params);
+    const context = await resolveTenantContext(params.tenantSlug, reply);
+    if (!context) {
+      return;
+    }
+
+    return {
+      data: await listScheduleSeries(context.schema),
+    };
+  });
+
   app.post("/tenants/:tenantSlug/schedule-series", async (request, reply) => {
     const params = tenantParamsSchema.parse(request.params);
     const context = await resolveTenantContext(params.tenantSlug, reply);
@@ -380,6 +414,38 @@ export async function scheduleRoutes(app: FastifyInstance) {
       throw error;
     }
   });
+
+  app.patch(
+    "/tenants/:tenantSlug/schedule-series/:seriesId/occurrences/:occurrenceDate",
+    async (request, reply) => {
+      const params = scheduleSeriesOccurrenceParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = updateScheduleSeriesOccurrenceSchema.parse(request.body);
+
+      try {
+        const series = await updateScheduleSeriesOccurrence(
+          context.schema,
+          params.seriesId,
+          params.occurrenceDate,
+          input,
+        );
+
+        return {
+          data: series,
+        };
+      } catch (error) {
+        if (error instanceof ScheduleSeriesError) {
+          return sendScheduleSeriesError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
 
   app.post(
     "/tenants/:tenantSlug/schedules/:scheduleId/publish",
