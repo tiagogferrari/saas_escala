@@ -25,6 +25,7 @@ import {
   ScheduleAssignmentError,
   SchedulePublicationError,
   ScheduleSeriesError,
+  updateScheduleSeries,
   updateScheduleSeriesOccurrence,
 } from "./schedule-repository";
 
@@ -66,8 +67,8 @@ const optionalTextSchema = z
   .string()
   .trim()
   .max(500)
+  .nullable()
   .optional()
-  .or(z.literal(""))
   .transform((value) => (value === "" ? null : value));
 
 const createScheduleSchema = z
@@ -131,6 +132,31 @@ const updateScheduleSeriesOccurrenceSchema = z.object({
   skipped: z.boolean(),
   note: optionalTextSchema,
 });
+
+const updateScheduleSeriesSchema = z
+  .object({
+    title: z.string().trim().min(2).max(160).optional(),
+    locationId: z.string().uuid().optional(),
+    functionId: z.string().uuid().optional(),
+    startsAt: z.string().datetime().optional(),
+    endsAt: z.string().datetime().optional(),
+    recurrenceIntervalWeeks: z.coerce.number().int().min(1).max(12).optional(),
+    recurrenceEndsOn: occurrenceDateSchema.optional(),
+    requiredCount: z.coerce.number().int().min(1).max(50).optional(),
+    meetingPoint: optionalTextSchema,
+    instructions: optionalTextSchema,
+    applyFrom: occurrenceDateSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      !value.startsAt ||
+      !value.endsAt ||
+      new Date(value.startsAt) < new Date(value.endsAt),
+    {
+      message: "End date must be after start date.",
+      path: ["endsAt"],
+    },
+  );
 
 const cancelScheduleSeriesSchema = z.object({
   cancelFrom: occurrenceDateSchema,
@@ -347,6 +373,13 @@ function sendScheduleSeriesError(
     });
   }
 
+  if (error.code === "series_reference_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Local ou funcao nao encontrados.",
+    });
+  }
+
   return reply.code(400).send({
     error: error.code,
     message: "Confira as datas, excecoes e pessoas da serie.",
@@ -427,6 +460,35 @@ export async function scheduleRoutes(app: FastifyInstance) {
       throw error;
     }
   });
+
+  app.patch(
+    "/tenants/:tenantSlug/schedule-series/:seriesId",
+    async (request, reply) => {
+      const params = scheduleSeriesParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = updateScheduleSeriesSchema.parse(request.body);
+
+      try {
+        return {
+          data: await updateScheduleSeries(
+            context.schema,
+            params.seriesId,
+            input,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof ScheduleSeriesError) {
+          return sendScheduleSeriesError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
 
   app.patch(
     "/tenants/:tenantSlug/schedule-series/:seriesId/occurrences/:occurrenceDate",

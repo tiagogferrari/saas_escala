@@ -174,6 +174,28 @@ export type UpdateScheduleSeriesOccurrenceInput = {
   note?: string | null;
 };
 
+export type UpdateScheduleSeriesInput = {
+  title?: string;
+  locationId?: string;
+  functionId?: string;
+  startsAt?: string;
+  endsAt?: string;
+  recurrenceIntervalWeeks?: number;
+  recurrenceEndsOn?: string;
+  requiredCount?: number;
+  meetingPoint?: string | null;
+  instructions?: string | null;
+  applyFrom?: string;
+};
+
+export type UpdateScheduleSeriesResult = {
+  series: ScheduleSeriesOverview;
+  applyFrom: string;
+  createdDraftSchedules: number;
+  updatedDraftSchedules: number;
+  cancelledDraftSchedules: number;
+};
+
 export type CancelScheduleSeriesInput = {
   cancelFrom: string;
   note?: string | null;
@@ -238,7 +260,17 @@ type ScheduleSeriesScheduleRow = {
   occurrence_date: Date;
   schedule_id: string;
   schedule_status: string;
+  starts_at: Date;
+  ends_at: Date;
   assignment_count: string;
+};
+
+type ScheduleSeriesExistingScheduleRow = {
+  id: string;
+  occurrence_date: Date;
+  status: string;
+  slot_id: string;
+  active_assignment_count: string;
 };
 
 type ScheduleSeriesExceptionRow = {
@@ -333,6 +365,7 @@ type ScheduleSeriesErrorCode =
   | "series_already_archived"
   | "series_invalid"
   | "series_not_found"
+  | "series_reference_not_found"
   | "series_too_large";
 
 export class ScheduleAssignmentError extends Error {
@@ -821,8 +854,8 @@ function mapScheduleSeriesOverview(
 
     return {
       occurrenceDate: occurrence.date,
-      startsAt: occurrence.startsAt.toISOString(),
-      endsAt: occurrence.endsAt.toISOString(),
+      startsAt: (schedule?.starts_at ?? occurrence.startsAt).toISOString(),
+      endsAt: (schedule?.ends_at ?? occurrence.endsAt).toISOString(),
       scheduleId: schedule?.schedule_id ?? null,
       scheduleStatus: schedule?.schedule_status ?? null,
       skipped: exceptionsByDate.has(occurrence.date),
@@ -1256,13 +1289,21 @@ export async function listScheduleSeries(schema: string) {
        s.series_occurrence_date as occurrence_date,
        s.id as schedule_id,
        s.status as schedule_status,
+       s.starts_at,
+       s.ends_at,
        count(a.id) filter (where a.status <> 'cancelled') as assignment_count
      from ${schema}.schedules s
      left join ${schema}.schedule_slots ss on ss.schedule_id = s.id
      left join ${schema}.assignments a on a.schedule_slot_id = ss.id
      where s.series_id = any($1::uuid[])
        and s.series_occurrence_date is not null
-     group by s.series_id, s.series_occurrence_date, s.id, s.status`,
+     group by
+       s.series_id,
+       s.series_occurrence_date,
+       s.id,
+       s.status,
+       s.starts_at,
+       s.ends_at`,
     [seriesIds],
   );
 
@@ -1290,6 +1331,400 @@ export async function listScheduleSeries(schema: string) {
   return seriesResult.rows.map((row) =>
     mapScheduleSeriesOverview(row, schedulesBySeries, exceptionsBySeries),
   );
+}
+
+export async function updateScheduleSeries(
+  schema: string,
+  seriesId: string,
+  input: UpdateScheduleSeriesInput,
+): Promise<UpdateScheduleSeriesResult> {
+  const client = await pool.connect();
+  const applyFrom = input.applyFrom ?? getDateKey(new Date());
+  let createdDraftSchedules = 0;
+  let updatedDraftSchedules = 0;
+  let cancelledDraftSchedules = 0;
+
+  try {
+    await client.query("begin");
+
+    const seriesResult = await client.query<ScheduleSeriesRow>(
+      `select
+         sr.id,
+         sr.title,
+         sr.status,
+         sr.anchor_starts_at,
+         sr.anchor_ends_at,
+         sr.recurrence_interval_weeks,
+         sr.recurrence_ends_on,
+         sr.required_count,
+         sr.meeting_point,
+         sr.instructions,
+         sr.created_at,
+         l.id as location_id,
+         l.name as location_name,
+         f.id as function_id,
+         f.name as function_name
+       from ${schema}.schedule_series sr
+       join ${schema}.locations l on l.id = sr.location_id
+       join ${schema}.functions f on f.id = sr.function_id
+       where sr.id = $1
+       for update of sr`,
+      [seriesId],
+    );
+
+    const series = seriesResult.rows[0];
+    if (!series) {
+      throw new ScheduleSeriesError(
+        "series_not_found",
+        "Schedule series not found.",
+      );
+    }
+
+    if (series.status === "archived") {
+      throw new ScheduleSeriesError(
+        "series_already_archived",
+        "Schedule series is already archived.",
+      );
+    }
+
+    const nextTitle = input.title ?? series.title;
+    const nextLocationId = input.locationId ?? series.location_id;
+    const nextFunctionId = input.functionId ?? series.function_id;
+    const nextStartsAt = new Date(
+      input.startsAt ?? series.anchor_starts_at.toISOString(),
+    );
+    const nextEndsAt = new Date(
+      input.endsAt ?? series.anchor_ends_at.toISOString(),
+    );
+    const nextIntervalWeeks =
+      input.recurrenceIntervalWeeks ?? series.recurrence_interval_weeks;
+    const nextEndsOn =
+      input.recurrenceEndsOn ?? getDateKey(series.recurrence_ends_on);
+    const nextRequiredCount = input.requiredCount ?? series.required_count;
+    const nextMeetingPoint =
+      input.meetingPoint === undefined
+        ? series.meeting_point
+        : normalizeOptionalText(input.meetingPoint);
+    const nextInstructions =
+      input.instructions === undefined
+        ? series.instructions
+        : normalizeOptionalText(input.instructions);
+
+    const referenceResult = await client.query<{ location_id: string }>(
+      `select l.id as location_id
+       from ${schema}.locations l
+       join ${schema}.functions f on f.id = $2
+       where l.id = $1
+       limit 1`,
+      [nextLocationId, nextFunctionId],
+    );
+    if (!referenceResult.rows[0]) {
+      throw new ScheduleSeriesError(
+        "series_reference_not_found",
+        "Schedule series location or function not found.",
+      );
+    }
+
+    const nextOccurrences = buildSeriesOccurrences(
+      nextStartsAt,
+      nextEndsAt,
+      nextIntervalWeeks,
+      nextEndsOn,
+    );
+    if (nextOccurrences.length === 0) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Schedule series does not contain any occurrences.",
+      );
+    }
+
+    const desiredOccurrencesByDate = new Map(
+      nextOccurrences
+        .filter((occurrence) => occurrence.date >= applyFrom)
+        .map((occurrence) => [occurrence.date, occurrence]),
+    );
+
+    const exceptionsResult = await client.query<{ occurrence_date: Date }>(
+      `select occurrence_date
+       from ${schema}.schedule_series_exceptions
+       where series_id = $1`,
+      [seriesId],
+    );
+    const skippedDates = new Set(
+      exceptionsResult.rows.map((row) => getDateKey(row.occurrence_date)),
+    );
+
+    const schedulesResult =
+      await client.query<ScheduleSeriesExistingScheduleRow>(
+        `select
+           s.id,
+           s.series_occurrence_date as occurrence_date,
+           s.status,
+           ss.id as slot_id,
+           (
+             select count(*)
+             from ${schema}.assignments a
+             where a.schedule_slot_id = ss.id
+               and a.status in (
+                 'invited',
+                 'pending',
+                 'confirmed',
+                 'externally_confirmed'
+               )
+           ) as active_assignment_count
+         from ${schema}.schedules s
+         join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+         where s.series_id = $1
+           and s.series_occurrence_date is not null
+         for update of s, ss`,
+        [seriesId],
+      );
+    const schedulesByDate = new Map(
+      schedulesResult.rows.map((row) => [getDateKey(row.occurrence_date), row]),
+    );
+    const draftSchedulesToCancel: string[] = [];
+
+    for (const [occurrenceDate, schedule] of schedulesByDate) {
+      if (
+        occurrenceDate >= applyFrom &&
+        schedule.status === "draft" &&
+        (!desiredOccurrencesByDate.has(occurrenceDate) ||
+          skippedDates.has(occurrenceDate))
+      ) {
+        draftSchedulesToCancel.push(schedule.id);
+      }
+    }
+
+    for (const [occurrenceDate, occurrence] of desiredOccurrencesByDate) {
+      if (skippedDates.has(occurrenceDate)) {
+        continue;
+      }
+
+      const schedule = schedulesByDate.get(occurrenceDate);
+      if (schedule) {
+        if (schedule.status !== "draft") {
+          continue;
+        }
+
+        if (Number(schedule.active_assignment_count) > nextRequiredCount) {
+          throw new ScheduleSeriesError(
+            "series_invalid",
+            "Draft schedule has more assignments than the new required count.",
+          );
+        }
+
+        const assigneesResult = await client.query<{ assignee_id: string }>(
+          `select a.assignee_id
+           from ${schema}.assignments a
+           where a.schedule_slot_id = $1
+             and a.assignee_type = 'person'
+             and a.status in (
+               'invited',
+               'pending',
+               'confirmed',
+               'externally_confirmed'
+             )`,
+          [schedule.slot_id],
+        );
+
+        for (const assignee of assigneesResult.rows) {
+          const hasConflict = await hasOverlappingActiveAssignment(
+            client,
+            schema,
+            assignee.assignee_id,
+            occurrence.startsAt,
+            occurrence.endsAt,
+            schedule.id,
+          );
+
+          if (hasConflict) {
+            throw new ScheduleSeriesError(
+              "person_unavailable",
+              "A person has a conflicting schedule occurrence.",
+            );
+          }
+        }
+
+        await client.query(
+          `update ${schema}.schedules
+           set location_id = $2,
+               title = $3,
+               starts_at = $4,
+               ends_at = $5,
+               meeting_point = $6,
+               instructions = $7,
+               updated_at = now()
+           where id = $1
+             and status = 'draft'`,
+          [
+            schedule.id,
+            nextLocationId,
+            nextTitle,
+            occurrence.startsAt.toISOString(),
+            occurrence.endsAt.toISOString(),
+            nextMeetingPoint,
+            nextInstructions,
+          ],
+        );
+
+        await client.query(
+          `update ${schema}.schedule_slots
+           set function_id = $2,
+               required_count = $3
+           where id = $1`,
+          [schedule.slot_id, nextFunctionId, nextRequiredCount],
+        );
+
+        updatedDraftSchedules += 1;
+        continue;
+      }
+
+      const scheduleResult = await client.query<{ id: string }>(
+        `insert into ${schema}.schedules (
+          series_id,
+          series_occurrence_date,
+          location_id,
+          title,
+          starts_at,
+          ends_at,
+          meeting_point,
+          instructions
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning id`,
+        [
+          seriesId,
+          occurrenceDate,
+          nextLocationId,
+          nextTitle,
+          occurrence.startsAt.toISOString(),
+          occurrence.endsAt.toISOString(),
+          nextMeetingPoint,
+          nextInstructions,
+        ],
+      );
+      const createdSchedule = scheduleResult.rows[0];
+      if (!createdSchedule) {
+        throw new Error(
+          "Schedule series occurrence insert did not return a schedule",
+        );
+      }
+
+      await client.query(
+        `insert into ${schema}.schedule_slots (
+          schedule_id,
+          function_id,
+          required_count
+        )
+        values ($1, $2, $3)`,
+        [createdSchedule.id, nextFunctionId, nextRequiredCount],
+      );
+
+      createdDraftSchedules += 1;
+    }
+
+    if (draftSchedulesToCancel.length > 0) {
+      const cancelledScheduleResult = await client.query<{ id: string }>(
+        `update ${schema}.schedules
+         set status = 'cancelled',
+             cancelled_reason = $2,
+             cancelled_at = now(),
+             updated_at = now()
+         where id = any($1::uuid[])
+           and status = 'draft'
+         returning id`,
+        [draftSchedulesToCancel, "Fora da nova regra da serie"],
+      );
+      const cancelledScheduleIds = cancelledScheduleResult.rows.map(
+        (row) => row.id,
+      );
+      cancelledDraftSchedules = cancelledScheduleIds.length;
+
+      if (cancelledScheduleIds.length > 0) {
+        await client.query(
+          `update ${schema}.assignments a
+           set status = 'cancelled',
+               updated_at = now()
+           from ${schema}.schedule_slots ss
+           where ss.schedule_id = any($1::uuid[])
+             and a.schedule_slot_id = ss.id
+             and a.status <> 'cancelled'`,
+          [cancelledScheduleIds],
+        );
+
+        await client.query(
+          `update ${schema}.replacement_requests rr
+           set status = 'cancelled',
+               updated_at = now()
+           from ${schema}.assignments a
+           join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+           where ss.schedule_id = any($1::uuid[])
+             and rr.assignment_id = a.id
+             and rr.status in (
+               'requested',
+               'under_review',
+               'waiting_response',
+               'accepted'
+             )`,
+          [cancelledScheduleIds],
+        );
+      }
+    }
+
+    await client.query(
+      `update ${schema}.schedule_series
+       set title = $2,
+           location_id = $3,
+           function_id = $4,
+           anchor_starts_at = $5,
+           anchor_ends_at = $6,
+           recurrence_interval_weeks = $7,
+           recurrence_ends_on = $8,
+           required_count = $9,
+           meeting_point = $10,
+           instructions = $11,
+           updated_at = now()
+       where id = $1`,
+      [
+        seriesId,
+        nextTitle,
+        nextLocationId,
+        nextFunctionId,
+        nextStartsAt.toISOString(),
+        nextEndsAt.toISOString(),
+        nextIntervalWeeks,
+        nextEndsOn,
+        nextRequiredCount,
+        nextMeetingPoint,
+        nextInstructions,
+      ],
+    );
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const series = (await listScheduleSeries(schema)).find(
+    (candidate) => candidate.id === seriesId,
+  );
+  if (!series) {
+    throw new ScheduleSeriesError(
+      "series_not_found",
+      "Schedule series not found.",
+    );
+  }
+
+  return {
+    series,
+    applyFrom,
+    createdDraftSchedules,
+    updatedDraftSchedules,
+    cancelledDraftSchedules,
+  };
 }
 
 export async function updateScheduleSeriesOccurrence(
