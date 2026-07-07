@@ -7,6 +7,7 @@ import {
   sendScheduleInvitations,
 } from "../notifications/notification-service";
 import {
+  cancelScheduleSeries,
   completeReplacementRequest,
   createReplacementRequest,
   createScheduleAssignment,
@@ -128,6 +129,11 @@ const createScheduleSeriesSchema = z
 
 const updateScheduleSeriesOccurrenceSchema = z.object({
   skipped: z.boolean(),
+  note: optionalTextSchema,
+});
+
+const cancelScheduleSeriesSchema = z.object({
+  cancelFrom: occurrenceDateSchema,
   note: optionalTextSchema,
 });
 
@@ -334,6 +340,13 @@ function sendScheduleSeriesError(
     });
   }
 
+  if (error.code === "series_already_archived") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Essa serie ja foi encerrada.",
+    });
+  }
+
   return reply.code(400).send({
     error: error.code,
     message: "Confira as datas, excecoes e pessoas da serie.",
@@ -436,6 +449,35 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
         return {
           data: series,
+        };
+      } catch (error) {
+        if (error instanceof ScheduleSeriesError) {
+          return sendScheduleSeriesError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/tenants/:tenantSlug/schedule-series/:seriesId/cancel",
+    async (request, reply) => {
+      const params = scheduleSeriesParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = cancelScheduleSeriesSchema.parse(request.body);
+
+      try {
+        return {
+          data: await cancelScheduleSeries(
+            context.schema,
+            params.seriesId,
+            input,
+          ),
         };
       } catch (error) {
         if (error instanceof ScheduleSeriesError) {
