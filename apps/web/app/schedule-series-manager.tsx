@@ -10,6 +10,8 @@ export type ScheduleSeriesOccurrence = {
   scheduleStatus: string | null;
   skipped: boolean;
   exceptionNote: string | null;
+  cancelledReason: string | null;
+  cancelledAt: string | null;
   assignmentCount: number;
 };
 
@@ -65,12 +67,14 @@ type ScheduleOption = {
 };
 
 type Props = {
+  cancellingScheduleId: string | null;
   isAssigning: boolean;
   onAssignPerson: (
     scheduleId: string,
     personId: string,
     status: ScheduleSeriesAssignmentStatus,
   ) => Promise<boolean>;
+  onCancelSchedule: (scheduleId: string, reason: string) => Promise<boolean>;
   onPublishSchedule: (scheduleId: string) => Promise<void>;
   onUpdateOccurrence: (
     seriesId: string,
@@ -101,6 +105,13 @@ function formatTimeRange(startsAt: string, endsAt: string) {
   return `${formatter.format(new Date(startsAt))} ate ${formatter.format(
     new Date(endsAt),
   )}`;
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
 function recurrenceLabel(intervalWeeks: number) {
@@ -234,6 +245,8 @@ function getOccurrenceClassName(
 
   if (occurrence.skipped) {
     classNames.push("is-skipped");
+  } else if (occurrence.scheduleStatus === "cancelled") {
+    classNames.push("is-cancelled");
   } else if (occurrence.scheduleStatus === "published") {
     classNames.push("is-published");
   } else if (occurrence.scheduleStatus === "draft") {
@@ -246,8 +259,10 @@ function getOccurrenceClassName(
 }
 
 export function ScheduleSeriesManager({
+  cancellingScheduleId,
   isAssigning,
   onAssignPerson,
+  onCancelSchedule,
   onPublishSchedule,
   onUpdateOccurrence,
   people,
@@ -304,10 +319,11 @@ export function ScheduleSeriesManager({
     selectedSeries && selectedOccurrence
       ? `${selectedSeries.id}:${selectedOccurrence.occurrenceDate}`
       : "";
+  const persistedNote = selectedOccurrence?.skipped
+    ? selectedOccurrence.exceptionNote
+    : selectedOccurrence?.cancelledReason;
   const noteValue = selectedOccurrenceKey
-    ? (noteByOccurrenceKey[selectedOccurrenceKey] ??
-      selectedOccurrence?.exceptionNote ??
-      "")
+    ? (noteByOccurrenceKey[selectedOccurrenceKey] ?? persistedNote ?? "")
     : "";
   const savedPersonId = selectedOccurrenceKey
     ? personByOccurrenceKey[selectedOccurrenceKey]
@@ -329,6 +345,12 @@ export function ScheduleSeriesManager({
     selectedOccurrence?.scheduleId === publishingScheduleId;
   const isUpdatingSelectedOccurrence =
     updatingOccurrenceKey === selectedOccurrenceKey;
+  const isCancellingSelectedSchedule =
+    selectedOccurrence?.scheduleId === cancellingScheduleId;
+  const isExplicitlyCancelled = Boolean(
+    selectedOccurrence?.scheduleStatus === "cancelled" &&
+    !selectedOccurrence.skipped,
+  );
 
   useEffect(() => {
     if (selectedSeries && selectedSeries.id !== selectedSeriesId) {
@@ -408,6 +430,14 @@ export function ScheduleSeriesManager({
     );
   }
 
+  async function cancelSelectedSchedule() {
+    if (!selectedOccurrence?.scheduleId || noteValue.trim().length < 2) {
+      return;
+    }
+
+    await onCancelSchedule(selectedOccurrence.scheduleId, noteValue.trim());
+  }
+
   return (
     <section className="panel schedule-series-manager">
       <div className="panel-header">
@@ -435,6 +465,11 @@ export function ScheduleSeriesManager({
               ).length;
               const draftCount = item.occurrences.filter(
                 (occurrence) => occurrence.scheduleStatus === "draft",
+              ).length;
+              const cancelledCount = item.occurrences.filter(
+                (occurrence) =>
+                  occurrence.scheduleStatus === "cancelled" &&
+                  !occurrence.skipped,
               ).length;
 
               return (
@@ -475,6 +510,10 @@ export function ScheduleSeriesManager({
                     <div>
                       <dt>Puladas</dt>
                       <dd>{skippedCount}</dd>
+                    </div>
+                    <div>
+                      <dt>Canceladas</dt>
+                      <dd>{cancelledCount}</dd>
                     </div>
                     <div>
                       <dt>Total</dt>
@@ -654,27 +693,48 @@ export function ScheduleSeriesManager({
                   </div>
                 ) : (
                   <div className="series-manager-warning">
-                    Restaure esta data para voltar a escalar pessoas aqui.
+                    {selectedOccurrence.skipped
+                      ? "Restaure esta data para voltar a escalar pessoas aqui."
+                      : isExplicitlyCancelled
+                        ? "Esta escala foi cancelada. As pessoas e os pedidos de substituicao desta data foram encerrados."
+                        : "Esta data nao aceita mais alteracoes de pessoas."}
                   </div>
                 )}
 
-                <label className="series-skip-note">
-                  Motivo para pular
-                  <textarea
-                    disabled={isUpdatingSelectedOccurrence}
-                    maxLength={500}
-                    onChange={(event) => updateNote(event.target.value)}
-                    placeholder="Ex.: feriado, retiro, evento especial"
-                    rows={3}
-                    value={noteValue}
-                  />
-                </label>
+                {selectedOccurrence.scheduleStatus !== "completed" ? (
+                  <label className="series-skip-note">
+                    {selectedOccurrence.scheduleStatus === "published" ||
+                    isExplicitlyCancelled
+                      ? "Motivo do cancelamento"
+                      : "Motivo para pular"}
+                    <textarea
+                      disabled={
+                        isUpdatingSelectedOccurrence ||
+                        isCancellingSelectedSchedule ||
+                        isExplicitlyCancelled
+                      }
+                      maxLength={500}
+                      onChange={(event) => updateNote(event.target.value)}
+                      placeholder="Ex.: feriado, retiro, evento especial"
+                      rows={3}
+                      value={noteValue}
+                    />
+                  </label>
+                ) : null}
 
                 {selectedOccurrence.scheduleStatus === "published" &&
                 !selectedOccurrence.skipped ? (
                   <div className="series-manager-warning">
-                    Ao pular esta data publicada, ela sera cancelada e deixa de
-                    aparecer como escala ativa para o membro.
+                    Cancelar encerra as atribuicoes e os pedidos de substituicao
+                    desta escala. O membro continuara vendo a data como
+                    cancelada e o motivo informado.
+                  </div>
+                ) : null}
+
+                {isExplicitlyCancelled && selectedOccurrence.cancelledAt ? (
+                  <div className="series-manager-warning">
+                    Cancelada em{" "}
+                    {formatDateTime(selectedOccurrence.cancelledAt)}.
                   </div>
                 ) : null}
 
@@ -700,7 +760,22 @@ export function ScheduleSeriesManager({
                         Restaurar data
                       </button>
                     </>
-                  ) : (
+                  ) : selectedOccurrence.scheduleStatus === "published" &&
+                    selectedOccurrence.scheduleId ? (
+                    <button
+                      className="danger-button"
+                      disabled={
+                        isCancellingSelectedSchedule ||
+                        noteValue.trim().length < 2
+                      }
+                      onClick={() => void cancelSelectedSchedule()}
+                      type="button"
+                    >
+                      {isCancellingSelectedSchedule
+                        ? "Cancelando..."
+                        : "Cancelar escala"}
+                    </button>
+                  ) : selectedOccurrence.scheduleStatus === "draft" ? (
                     <button
                       className="danger-button"
                       disabled={isUpdatingSelectedOccurrence}
@@ -711,7 +786,7 @@ export function ScheduleSeriesManager({
                         ? "Pulando..."
                         : "Pular data"}
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </div>

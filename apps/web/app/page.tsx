@@ -99,6 +99,8 @@ type ScheduleDraft = {
   endsAt: string;
   meetingPoint: string | null;
   instructions: string | null;
+  cancelledReason: string | null;
+  cancelledAt: string | null;
   location: {
     id: string;
     name: string;
@@ -619,6 +621,9 @@ export default function HomePage({ searchParams }: HomePageProps) {
   const [updatingSeriesOccurrenceKey, setUpdatingSeriesOccurrenceKey] =
     useState<string | null>(null);
   const [publishingScheduleId, setPublishingScheduleId] = useState<
+    string | null
+  >(null);
+  const [cancellingScheduleId, setCancellingScheduleId] = useState<
     string | null
   >(null);
   const [resendingInvitationAssignmentId, setResendingInvitationAssignmentId] =
@@ -1481,6 +1486,71 @@ export default function HomePage({ searchParams }: HomePageProps) {
     }
   }
 
+  async function cancelSchedule(scheduleId: string, reason: string) {
+    if (!selectedTenantSlug) {
+      return false;
+    }
+
+    setCancellingScheduleId(scheduleId);
+    setWorkspaceMessage(null);
+
+    try {
+      const response = await apiFetch(
+        `${apiUrl}/tenants/${selectedTenantSlug}/schedules/${scheduleId}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ reason }),
+        },
+      );
+
+      if (
+        response.status === 400 ||
+        response.status === 404 ||
+        response.status === 409
+      ) {
+        const payload = (await response.json()) as { message?: string };
+        setWorkspaceMessage(
+          payload.message ?? "Nao foi possivel cancelar a escala.",
+        );
+        return false;
+      }
+
+      if (!response.ok) {
+        setWorkspaceMessage("Nao foi possivel cancelar a escala.");
+        return false;
+      }
+
+      const payload = (await response.json()) as {
+        data: {
+          cancelledAssignments: number;
+          cancelledReplacementRequests: number;
+        };
+      };
+      const assignmentMessage =
+        payload.data.cancelledAssignments === 1
+          ? "1 atribuicao encerrada"
+          : `${payload.data.cancelledAssignments} atribuicoes encerradas`;
+      const replacementMessage =
+        payload.data.cancelledReplacementRequests > 0
+          ? ` e ${payload.data.cancelledReplacementRequests} pedido(s) de substituicao encerrado(s)`
+          : "";
+
+      setWorkspaceMessage(
+        `Escala cancelada. ${assignmentMessage}${replacementMessage}.`,
+      );
+      await loadTenantData(selectedTenantSlug);
+      return true;
+    } catch {
+      setWorkspaceMessage("API indisponivel ao cancelar escala.");
+      return false;
+    } finally {
+      setCancellingScheduleId(null);
+    }
+  }
+
   async function resendInvitation(scheduleId: string, assignmentId: string) {
     if (!selectedTenantSlug) {
       return;
@@ -2157,8 +2227,10 @@ export default function HomePage({ searchParams }: HomePageProps) {
             />
 
             <ScheduleSeriesManager
+              cancellingScheduleId={cancellingScheduleId}
               isAssigning={isSubmittingAssignment}
               onAssignPerson={assignPersonToScheduleById}
+              onCancelSchedule={cancelSchedule}
               onPublishSchedule={publishSchedule}
               onUpdateOccurrence={updateScheduleSeriesOccurrence}
               people={people}
@@ -2372,9 +2444,11 @@ export default function HomePage({ searchParams }: HomePageProps) {
             </div>
 
             <SchedulePanel
+              cancellingScheduleId={cancellingScheduleId}
               completingReplacementRequestId={completingReplacementRequestId}
               invitingReplacementRequestId={invitingReplacementRequestId}
               onCompleteReplacementRequest={completeReplacementRequest}
+              onCancelSchedule={cancelSchedule}
               onInviteReplacementCandidate={inviteReplacementCandidate}
               onPublishSchedule={publishSchedule}
               onReplacementCandidateChange={updateReplacementCandidate}
@@ -2647,9 +2721,11 @@ function StatusCard({ label, status }: { label: string; status: ApiStatus }) {
 }
 
 function SchedulePanel({
+  cancellingScheduleId,
   completingReplacementRequestId,
   invitingReplacementRequestId,
   onCompleteReplacementRequest,
+  onCancelSchedule,
   onInviteReplacementCandidate,
   onPublishSchedule,
   onReplacementCandidateChange,
@@ -2660,9 +2736,11 @@ function SchedulePanel({
   resendingInvitationAssignmentId,
   schedules,
 }: {
+  cancellingScheduleId: string | null;
   completingReplacementRequestId: string | null;
   invitingReplacementRequestId: string | null;
   onCompleteReplacementRequest: (replacementRequestId: string) => Promise<void>;
+  onCancelSchedule: (scheduleId: string, reason: string) => Promise<boolean>;
   onInviteReplacementCandidate: (replacementRequestId: string) => Promise<void>;
   onPublishSchedule: (scheduleId: string) => Promise<void>;
   onReplacementCandidateChange: (
@@ -2698,10 +2776,12 @@ function SchedulePanel({
         <div className="schedule-list">
           {schedules.map((schedule) => (
             <ScheduleCard
+              cancellingScheduleId={cancellingScheduleId}
               completingReplacementRequestId={completingReplacementRequestId}
               invitingReplacementRequestId={invitingReplacementRequestId}
               key={schedule.id}
               onCompleteReplacementRequest={onCompleteReplacementRequest}
+              onCancelSchedule={onCancelSchedule}
               onInviteReplacementCandidate={onInviteReplacementCandidate}
               onPublishSchedule={onPublishSchedule}
               onReplacementCandidateChange={onReplacementCandidateChange}
@@ -2721,9 +2801,11 @@ function SchedulePanel({
 }
 
 function ScheduleCard({
+  cancellingScheduleId,
   completingReplacementRequestId,
   invitingReplacementRequestId,
   onCompleteReplacementRequest,
+  onCancelSchedule,
   onInviteReplacementCandidate,
   onPublishSchedule,
   onReplacementCandidateChange,
@@ -2735,9 +2817,11 @@ function ScheduleCard({
   schedule,
   schedules,
 }: {
+  cancellingScheduleId: string | null;
   completingReplacementRequestId: string | null;
   invitingReplacementRequestId: string | null;
   onCompleteReplacementRequest: (replacementRequestId: string) => Promise<void>;
+  onCancelSchedule: (scheduleId: string, reason: string) => Promise<boolean>;
   onInviteReplacementCandidate: (replacementRequestId: string) => Promise<void>;
   onPublishSchedule: (scheduleId: string) => Promise<void>;
   onReplacementCandidateChange: (
@@ -2755,6 +2839,8 @@ function ScheduleCard({
   schedule: ScheduleDraft;
   schedules: ScheduleDraft[];
 }) {
+  const [isCancellationOpen, setIsCancellationOpen] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
   const activeAssignmentCount = countEffectiveAssignments(schedule);
   const replacementRequestsById = getReplacementRequestsById(schedule);
   const replacementRequestsInProgress =
@@ -2764,6 +2850,22 @@ function ScheduleCard({
     schedules,
     schedule,
   );
+  const isCancelling = cancellingScheduleId === schedule.id;
+
+  async function submitCancellation() {
+    if (cancellationReason.trim().length < 2) {
+      return;
+    }
+
+    const cancelled = await onCancelSchedule(
+      schedule.id,
+      cancellationReason.trim(),
+    );
+    if (cancelled) {
+      setIsCancellationOpen(false);
+      setCancellationReason("");
+    }
+  }
 
   return (
     <article className="schedule-card">
@@ -2807,6 +2909,63 @@ function ScheduleCard({
           {activeAssignmentCount < schedule.slot.requiredCount ? (
             <span>Esta escala sera publicada com vagas em aberto.</span>
           ) : null}
+        </div>
+      ) : null}
+
+      {schedule.status === "published" ? (
+        <div className="schedule-actions">
+          <button
+            className="danger-button"
+            disabled={isCancelling}
+            onClick={() => setIsCancellationOpen((isOpen) => !isOpen)}
+            type="button"
+          >
+            Cancelar escala
+          </button>
+        </div>
+      ) : null}
+
+      {schedule.status === "published" && isCancellationOpen ? (
+        <div className="schedule-cancellation-form">
+          <label>
+            Motivo do cancelamento
+            <textarea
+              disabled={isCancelling}
+              maxLength={500}
+              onChange={(event) => setCancellationReason(event.target.value)}
+              placeholder="Ex.: evento cancelado ou local indisponivel"
+              rows={3}
+              value={cancellationReason}
+            />
+          </label>
+          <div className="schedule-cancellation-actions">
+            <button
+              className="danger-button"
+              disabled={isCancelling || cancellationReason.trim().length < 2}
+              onClick={() => void submitCancellation()}
+              type="button"
+            >
+              {isCancelling ? "Cancelando..." : "Confirmar cancelamento"}
+            </button>
+            <button
+              className="ghost-button"
+              disabled={isCancelling}
+              onClick={() => setIsCancellationOpen(false)}
+              type="button"
+            >
+              Voltar
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {schedule.status === "cancelled" ? (
+        <div className="series-manager-warning">
+          <strong>Escala cancelada.</strong>{" "}
+          {schedule.cancelledReason ?? "Sem motivo informado."}
+          {schedule.cancelledAt
+            ? ` Cancelada em ${formatDate(schedule.cancelledAt)}.`
+            : ""}
         </div>
       ) : null}
 

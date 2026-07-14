@@ -608,6 +608,26 @@ dd {
   font-weight: 700;
 }
 
+.schedule-cancellation-form {
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.schedule-cancellation-form textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.schedule-cancellation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .schedule-meta span,
 .pill {
   background: #eff6ff;
@@ -1243,6 +1263,11 @@ dd {
 .series-manager-occurrence.is-published {
   background: #ecfdf5;
   border-color: #bbf7d0;
+}
+
+.series-manager-occurrence.is-cancelled {
+  background: #fff1f2;
+  border-color: #fda4af;
 }
 
 .series-manager-occurrence.is-muted {

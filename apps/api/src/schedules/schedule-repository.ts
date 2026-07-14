@@ -82,6 +82,8 @@ export type ScheduleSeriesOccurrence = {
   scheduleStatus: string | null;
   skipped: boolean;
   exceptionNote: string | null;
+  cancelledReason: string | null;
+  cancelledAt: string | null;
   assignmentCount: number;
   requiredCount: number;
   meetingPoint: string | null;
@@ -234,6 +236,16 @@ export type CancelScheduleSeriesResult = {
   skippedOccurrences: number;
 };
 
+export type CancelScheduleInput = {
+  reason: string;
+};
+
+export type CancelScheduleResult = {
+  schedule: ScheduleDraft;
+  cancelledAssignments: number;
+  cancelledReplacementRequests: number;
+};
+
 export type CreateReplacementRequestInput = {
   reason?: string | null;
   urgent?: boolean;
@@ -293,6 +305,8 @@ type ScheduleSeriesScheduleRow = {
   required_count: number;
   meeting_point: string | null;
   instructions: string | null;
+  cancelled_reason: string | null;
+  cancelled_at: Date | null;
   assignment_count: string;
 };
 
@@ -390,6 +404,11 @@ type ScheduleAssignmentErrorCode =
 
 type SchedulePublicationErrorCode = "schedule_not_draft" | "schedule_not_found";
 
+type ScheduleCancellationErrorCode =
+  | "schedule_already_cancelled"
+  | "schedule_not_found"
+  | "schedule_not_published";
+
 type MemberScheduleErrorCode =
   | "assignment_not_actionable"
   | "assignment_not_found"
@@ -407,6 +426,8 @@ type ReplacementRequestManagerErrorCode =
 
 type ScheduleSeriesErrorCode =
   | "occurrence_not_editable"
+  | "occurrence_not_restorable"
+  | "occurrence_not_skippable"
   | "person_not_found"
   | "person_unavailable"
   | "series_already_archived"
@@ -427,6 +448,15 @@ export class ScheduleAssignmentError extends Error {
 export class SchedulePublicationError extends Error {
   constructor(
     public readonly code: SchedulePublicationErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export class ScheduleCancellationError extends Error {
+  constructor(
+    public readonly code: ScheduleCancellationErrorCode,
     message: string,
   ) {
     super(message);
@@ -908,6 +938,8 @@ function mapScheduleSeriesOverview(
       scheduleStatus: schedule?.schedule_status ?? null,
       skipped: exceptionsByDate.has(occurrence.date),
       exceptionNote,
+      cancelledReason: schedule?.cancelled_reason ?? null,
+      cancelledAt: schedule?.cancelled_at?.toISOString() ?? null,
       assignmentCount: Number(schedule?.assignment_count ?? 0),
       requiredCount: schedule?.required_count ?? row.required_count,
       meetingPoint: schedule ? schedule.meeting_point : row.meeting_point,
@@ -1358,6 +1390,8 @@ export async function listScheduleSeries(schema: string) {
        ss.required_count,
        s.meeting_point,
        s.instructions,
+       s.cancelled_reason,
+       s.cancelled_at,
        count(a.id) filter (where a.status <> 'cancelled') as assignment_count
      from ${schema}.schedules s
      join ${schema}.locations l on l.id = s.location_id
@@ -1380,7 +1414,9 @@ export async function listScheduleSeries(schema: string) {
        f.name,
        ss.required_count,
        s.meeting_point,
-       s.instructions`,
+       s.instructions,
+       s.cancelled_reason,
+       s.cancelled_at`,
     [seriesIds],
   );
 
@@ -1901,10 +1937,27 @@ export async function updateScheduleSeriesOccurrenceDetails(
       );
     const schedule = scheduleResult.rows[0] ?? null;
 
+    const exceptionResult = await client.query<{ id: string }>(
+      `select id
+       from ${schema}.schedule_series_exceptions
+       where series_id = $1
+         and occurrence_date = $2::date
+       limit 1`,
+      [seriesId, occurrenceDate],
+    );
+    const isSkipped = Boolean(exceptionResult.rows[0]);
+
     if (schedule?.status === "completed") {
       throw new ScheduleSeriesError(
         "occurrence_not_editable",
         "Completed occurrence cannot be edited.",
+      );
+    }
+
+    if (schedule?.status === "cancelled" && !isSkipped) {
+      throw new ScheduleSeriesError(
+        "occurrence_not_editable",
+        "Cancelled occurrence cannot be edited.",
       );
     }
 
@@ -2168,6 +2221,13 @@ export async function updateScheduleSeriesOccurrence(
       );
     }
 
+    if (series.status === "archived") {
+      throw new ScheduleSeriesError(
+        "series_already_archived",
+        "Schedule series is already archived.",
+      );
+    }
+
     const occurrence = getSeriesRowOccurrences(series).find(
       (candidate) => candidate.date === occurrenceDate,
     );
@@ -2188,7 +2248,38 @@ export async function updateScheduleSeriesOccurrence(
     );
     const schedule = scheduleResult.rows[0] ?? null;
 
+    const exceptionResult = await client.query<{ id: string }>(
+      `select id
+       from ${schema}.schedule_series_exceptions
+       where series_id = $1
+         and occurrence_date = $2::date
+       limit 1`,
+      [seriesId, occurrenceDate],
+    );
+    const isSkipped = Boolean(exceptionResult.rows[0]);
+
     if (input.skipped) {
+      if (schedule?.status === "published") {
+        throw new ScheduleSeriesError(
+          "occurrence_not_skippable",
+          "Published occurrence must be cancelled explicitly.",
+        );
+      }
+
+      if (schedule?.status === "completed") {
+        throw new ScheduleSeriesError(
+          "occurrence_not_skippable",
+          "Completed occurrence cannot be skipped.",
+        );
+      }
+
+      if (schedule?.status === "cancelled" && !isSkipped) {
+        throw new ScheduleSeriesError(
+          "occurrence_not_skippable",
+          "Cancelled occurrence cannot be changed into a skipped date.",
+        );
+      }
+
       await client.query(
         `insert into ${schema}.schedule_series_exceptions (
           series_id,
@@ -2201,7 +2292,7 @@ export async function updateScheduleSeriesOccurrence(
         [seriesId, occurrenceDate, note],
       );
 
-      if (schedule && schedule.status !== "cancelled") {
+      if (schedule?.status === "draft") {
         await client.query(
           `update ${schema}.schedules
            set status = 'cancelled',
@@ -2211,36 +2302,15 @@ export async function updateScheduleSeriesOccurrence(
            where id = $1`,
           [schedule.id, note ?? "Data pulada na serie"],
         );
-
-        await client.query(
-          `update ${schema}.assignments a
-           set status = 'cancelled',
-               updated_at = now()
-           from ${schema}.schedule_slots ss
-           where ss.schedule_id = $1
-             and a.schedule_slot_id = ss.id
-             and a.status <> 'cancelled'`,
-          [schedule.id],
-        );
-
-        await client.query(
-          `update ${schema}.replacement_requests rr
-           set status = 'cancelled',
-               updated_at = now()
-           from ${schema}.assignments a
-           join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
-           where ss.schedule_id = $1
-             and rr.assignment_id = a.id
-             and rr.status in (
-               'requested',
-               'under_review',
-               'waiting_response',
-               'accepted'
-             )`,
-          [schedule.id],
-        );
       }
     } else {
+      if (!isSkipped && schedule?.status === "cancelled") {
+        throw new ScheduleSeriesError(
+          "occurrence_not_restorable",
+          "Explicitly cancelled occurrence cannot be restored as a skipped date.",
+        );
+      }
+
       await client.query(
         `delete from ${schema}.schedule_series_exceptions
          where series_id = $1
@@ -2844,6 +2914,109 @@ export async function publishSchedule(schema: string, scheduleId: string) {
   }
 
   return getScheduleDraftById(schema, scheduleId);
+}
+
+export async function cancelSchedule(
+  schema: string,
+  scheduleId: string,
+  input: CancelScheduleInput,
+): Promise<CancelScheduleResult> {
+  const client = await pool.connect();
+  const reason = input.reason.trim();
+  let cancelledAssignments = 0;
+  let cancelledReplacementRequests = 0;
+
+  try {
+    await client.query("begin");
+
+    const scheduleResult = await client.query<{ status: string }>(
+      `select status
+       from ${schema}.schedules
+       where id = $1
+       for update`,
+      [scheduleId],
+    );
+    const schedule = scheduleResult.rows[0];
+
+    if (!schedule) {
+      throw new ScheduleCancellationError(
+        "schedule_not_found",
+        "Schedule not found.",
+      );
+    }
+
+    if (schedule.status === "cancelled") {
+      throw new ScheduleCancellationError(
+        "schedule_already_cancelled",
+        "Schedule is already cancelled.",
+      );
+    }
+
+    if (schedule.status !== "published") {
+      throw new ScheduleCancellationError(
+        "schedule_not_published",
+        "Only published schedules can be cancelled.",
+      );
+    }
+
+    await client.query(
+      `update ${schema}.schedules
+       set status = 'cancelled',
+           cancelled_reason = $2,
+           cancelled_at = now(),
+           updated_at = now()
+       where id = $1`,
+      [scheduleId, reason],
+    );
+
+    const cancelledAssignmentResult = await client.query<{ id: string }>(
+      `update ${schema}.assignments a
+       set status = 'cancelled',
+           updated_at = now()
+       from ${schema}.schedule_slots ss
+       where ss.schedule_id = $1
+         and a.schedule_slot_id = ss.id
+         and a.status <> 'cancelled'
+       returning a.id`,
+      [scheduleId],
+    );
+    cancelledAssignments = cancelledAssignmentResult.rowCount ?? 0;
+
+    const cancelledReplacementRequestResult = await client.query<{
+      id: string;
+    }>(
+      `update ${schema}.replacement_requests rr
+       set status = 'cancelled',
+           updated_at = now()
+       from ${schema}.assignments a
+       join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
+       where ss.schedule_id = $1
+         and rr.assignment_id = a.id
+         and rr.status in (
+           'requested',
+           'under_review',
+           'waiting_response',
+           'accepted'
+         )
+       returning rr.id`,
+      [scheduleId],
+    );
+    cancelledReplacementRequests =
+      cancelledReplacementRequestResult.rowCount ?? 0;
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return {
+    schedule: await getScheduleDraftById(schema, scheduleId),
+    cancelledAssignments,
+    cancelledReplacementRequests,
+  };
 }
 
 export async function inviteReplacementCandidate(

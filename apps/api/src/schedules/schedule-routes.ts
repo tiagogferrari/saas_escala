@@ -7,6 +7,7 @@ import {
   sendScheduleInvitations,
 } from "../notifications/notification-service";
 import {
+  cancelSchedule,
   cancelScheduleSeries,
   completeReplacementRequest,
   createReplacementRequest,
@@ -23,6 +24,7 @@ import {
   ReplacementRequestManagerError,
   respondToMemberScheduleAssignment,
   ScheduleAssignmentError,
+  ScheduleCancellationError,
   SchedulePublicationError,
   ScheduleSeriesError,
   updateScheduleSeries,
@@ -184,6 +186,10 @@ const updateScheduleSeriesSchema = z
 const cancelScheduleSeriesSchema = z.object({
   cancelFrom: occurrenceDateSchema,
   note: optionalTextSchema,
+});
+
+const cancelScheduleSchema = z.object({
+  reason: z.string().trim().min(2).max(500),
 });
 
 const createAssignmentSchema = z.object({
@@ -357,6 +363,30 @@ function sendPublicationError(
   });
 }
 
+function sendCancellationError(
+  error: ScheduleCancellationError,
+  reply: FastifyReply,
+) {
+  if (error.code === "schedule_not_found") {
+    return reply.code(404).send({
+      error: error.code,
+      message: "Escala nao encontrada.",
+    });
+  }
+
+  if (error.code === "schedule_already_cancelled") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Essa escala ja foi cancelada.",
+    });
+  }
+
+  return reply.code(409).send({
+    error: error.code,
+    message: "Apenas escalas publicadas podem ser canceladas.",
+  });
+}
+
 function sendScheduleSeriesError(
   error: ScheduleSeriesError,
   reply: FastifyReply,
@@ -407,6 +437,21 @@ function sendScheduleSeriesError(
     return reply.code(409).send({
       error: error.code,
       message: "Essa ocorrencia nao pode ser editada.",
+    });
+  }
+
+  if (error.code === "occurrence_not_skippable") {
+    return reply.code(409).send({
+      error: error.code,
+      message:
+        "Uma escala publicada deve ser cancelada pela acao Cancelar escala.",
+    });
+  }
+
+  if (error.code === "occurrence_not_restorable") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Uma escala cancelada nao pode ser restaurada como data pulada.",
     });
   }
 
@@ -642,6 +687,31 @@ export async function scheduleRoutes(app: FastifyInstance) {
       } catch (error) {
         if (error instanceof SchedulePublicationError) {
           return sendPublicationError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.post(
+    "/tenants/:tenantSlug/schedules/:scheduleId/cancel",
+    async (request, reply) => {
+      const params = scheduleParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = cancelScheduleSchema.parse(request.body);
+
+      try {
+        return {
+          data: await cancelSchedule(context.schema, params.scheduleId, input),
+        };
+      } catch (error) {
+        if (error instanceof ScheduleCancellationError) {
+          return sendCancellationError(error, reply);
         }
 
         throw error;
