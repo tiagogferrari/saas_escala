@@ -75,6 +75,7 @@ export type ScheduleSeries = {
 
 export type ScheduleSeriesOccurrence = {
   occurrenceDate: string;
+  title: string;
   startsAt: string;
   endsAt: string;
   scheduleId: string | null;
@@ -82,6 +83,17 @@ export type ScheduleSeriesOccurrence = {
   skipped: boolean;
   exceptionNote: string | null;
   assignmentCount: number;
+  requiredCount: number;
+  meetingPoint: string | null;
+  instructions: string | null;
+  location: {
+    id: string;
+    name: string;
+  };
+  function: {
+    id: string;
+    name: string;
+  };
 };
 
 export type ScheduleSeriesOverview = {
@@ -174,6 +186,17 @@ export type UpdateScheduleSeriesOccurrenceInput = {
   note?: string | null;
 };
 
+export type UpdateScheduleSeriesOccurrenceDetailsInput = {
+  title?: string;
+  locationId?: string;
+  functionId?: string;
+  startsAt?: string;
+  endsAt?: string;
+  requiredCount?: number;
+  meetingPoint?: string | null;
+  instructions?: string | null;
+};
+
 export type UpdateScheduleSeriesInput = {
   title?: string;
   locationId?: string;
@@ -260,8 +283,16 @@ type ScheduleSeriesScheduleRow = {
   occurrence_date: Date;
   schedule_id: string;
   schedule_status: string;
+  title: string;
   starts_at: Date;
   ends_at: Date;
+  location_id: string;
+  location_name: string;
+  function_id: string;
+  function_name: string;
+  required_count: number;
+  meeting_point: string | null;
+  instructions: string | null;
   assignment_count: string;
 };
 
@@ -270,6 +301,21 @@ type ScheduleSeriesExistingScheduleRow = {
   occurrence_date: Date;
   status: string;
   slot_id: string;
+  active_assignment_count: string;
+};
+
+type ScheduleSeriesOccurrenceDetailsScheduleRow = {
+  id: string;
+  title: string;
+  status: string;
+  location_id: string;
+  starts_at: Date;
+  ends_at: Date;
+  meeting_point: string | null;
+  instructions: string | null;
+  slot_id: string;
+  function_id: string;
+  required_count: number;
   active_assignment_count: string;
 };
 
@@ -360,6 +406,7 @@ type ReplacementRequestManagerErrorCode =
   | "schedule_not_assignable";
 
 type ScheduleSeriesErrorCode =
+  | "occurrence_not_editable"
   | "person_not_found"
   | "person_unavailable"
   | "series_already_archived"
@@ -854,6 +901,7 @@ function mapScheduleSeriesOverview(
 
     return {
       occurrenceDate: occurrence.date,
+      title: schedule?.title ?? row.title,
       startsAt: (schedule?.starts_at ?? occurrence.startsAt).toISOString(),
       endsAt: (schedule?.ends_at ?? occurrence.endsAt).toISOString(),
       scheduleId: schedule?.schedule_id ?? null,
@@ -861,6 +909,17 @@ function mapScheduleSeriesOverview(
       skipped: exceptionsByDate.has(occurrence.date),
       exceptionNote,
       assignmentCount: Number(schedule?.assignment_count ?? 0),
+      requiredCount: schedule?.required_count ?? row.required_count,
+      meetingPoint: schedule ? schedule.meeting_point : row.meeting_point,
+      instructions: schedule ? schedule.instructions : row.instructions,
+      location: {
+        id: schedule?.location_id ?? row.location_id,
+        name: schedule?.location_name ?? row.location_name,
+      },
+      function: {
+        id: schedule?.function_id ?? row.function_id,
+        name: schedule?.function_name ?? row.function_name,
+      },
     };
   });
 
@@ -1289,11 +1348,21 @@ export async function listScheduleSeries(schema: string) {
        s.series_occurrence_date as occurrence_date,
        s.id as schedule_id,
        s.status as schedule_status,
+       s.title,
        s.starts_at,
        s.ends_at,
+       s.location_id,
+       l.name as location_name,
+       ss.function_id,
+       f.name as function_name,
+       ss.required_count,
+       s.meeting_point,
+       s.instructions,
        count(a.id) filter (where a.status <> 'cancelled') as assignment_count
      from ${schema}.schedules s
+     join ${schema}.locations l on l.id = s.location_id
      left join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+     left join ${schema}.functions f on f.id = ss.function_id
      left join ${schema}.assignments a on a.schedule_slot_id = ss.id
      where s.series_id = any($1::uuid[])
        and s.series_occurrence_date is not null
@@ -1302,8 +1371,16 @@ export async function listScheduleSeries(schema: string) {
        s.series_occurrence_date,
        s.id,
        s.status,
+       s.title,
        s.starts_at,
-       s.ends_at`,
+       s.ends_at,
+       s.location_id,
+       l.name,
+       ss.function_id,
+       f.name,
+       ss.required_count,
+       s.meeting_point,
+       s.instructions`,
     [seriesIds],
   );
 
@@ -1725,6 +1802,325 @@ export async function updateScheduleSeries(
     updatedDraftSchedules,
     cancelledDraftSchedules,
   };
+}
+
+export async function updateScheduleSeriesOccurrenceDetails(
+  schema: string,
+  seriesId: string,
+  occurrenceDate: string,
+  input: UpdateScheduleSeriesOccurrenceDetailsInput,
+) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("begin");
+
+    const seriesResult = await client.query<ScheduleSeriesRow>(
+      `select
+         sr.id,
+         sr.title,
+         sr.status,
+         sr.anchor_starts_at,
+         sr.anchor_ends_at,
+         sr.recurrence_interval_weeks,
+         sr.recurrence_ends_on,
+         sr.required_count,
+         sr.meeting_point,
+         sr.instructions,
+         sr.created_at,
+         l.id as location_id,
+         l.name as location_name,
+         f.id as function_id,
+         f.name as function_name
+       from ${schema}.schedule_series sr
+       join ${schema}.locations l on l.id = sr.location_id
+       join ${schema}.functions f on f.id = sr.function_id
+       where sr.id = $1
+       for update of sr`,
+      [seriesId],
+    );
+
+    const series = seriesResult.rows[0];
+    if (!series) {
+      throw new ScheduleSeriesError(
+        "series_not_found",
+        "Schedule series not found.",
+      );
+    }
+
+    if (series.status === "archived") {
+      throw new ScheduleSeriesError(
+        "series_already_archived",
+        "Schedule series is already archived.",
+      );
+    }
+
+    const occurrence = getSeriesRowOccurrences(series).find(
+      (candidate) => candidate.date === occurrenceDate,
+    );
+    if (!occurrence) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Occurrence is not part of the schedule series.",
+      );
+    }
+
+    const scheduleResult =
+      await client.query<ScheduleSeriesOccurrenceDetailsScheduleRow>(
+        `select
+           s.id,
+           s.title,
+           s.status,
+           s.location_id,
+           s.starts_at,
+           s.ends_at,
+           s.meeting_point,
+           s.instructions,
+           ss.id as slot_id,
+           ss.function_id,
+           ss.required_count,
+           (
+             select count(*)
+             from ${schema}.assignments a
+             where a.schedule_slot_id = ss.id
+               and a.status in (
+                 'invited',
+                 'pending',
+                 'confirmed',
+                 'externally_confirmed'
+               )
+           ) as active_assignment_count
+         from ${schema}.schedules s
+         join ${schema}.schedule_slots ss on ss.schedule_id = s.id
+         where s.series_id = $1
+           and s.series_occurrence_date = $2::date
+         order by ss.created_at asc
+         limit 1
+         for update of s, ss`,
+        [seriesId, occurrenceDate],
+      );
+    const schedule = scheduleResult.rows[0] ?? null;
+
+    if (schedule?.status === "completed") {
+      throw new ScheduleSeriesError(
+        "occurrence_not_editable",
+        "Completed occurrence cannot be edited.",
+      );
+    }
+
+    const baseStartsAt = schedule?.starts_at ?? occurrence.startsAt;
+    const baseEndsAt = schedule?.ends_at ?? occurrence.endsAt;
+    const durationMs = baseEndsAt.getTime() - baseStartsAt.getTime();
+    const nextStartsAt = input.startsAt
+      ? new Date(input.startsAt)
+      : baseStartsAt;
+    const nextEndsAt = input.endsAt
+      ? new Date(input.endsAt)
+      : input.startsAt
+        ? new Date(nextStartsAt.getTime() + durationMs)
+        : baseEndsAt;
+
+    if (
+      Number.isNaN(nextStartsAt.getTime()) ||
+      Number.isNaN(nextEndsAt.getTime()) ||
+      nextStartsAt >= nextEndsAt
+    ) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Occurrence has an invalid date range.",
+      );
+    }
+
+    const nextTitle = input.title ?? schedule?.title ?? series.title;
+    const nextLocationId =
+      input.locationId ?? schedule?.location_id ?? series.location_id;
+    const nextFunctionId =
+      input.functionId ?? schedule?.function_id ?? series.function_id;
+    const nextRequiredCount =
+      input.requiredCount ?? schedule?.required_count ?? series.required_count;
+    const nextMeetingPoint =
+      input.meetingPoint === undefined
+        ? schedule
+          ? schedule.meeting_point
+          : series.meeting_point
+        : normalizeOptionalText(input.meetingPoint);
+    const nextInstructions =
+      input.instructions === undefined
+        ? schedule
+          ? schedule.instructions
+          : series.instructions
+        : normalizeOptionalText(input.instructions);
+
+    const referenceResult = await client.query<{ location_id: string }>(
+      `select l.id as location_id
+       from ${schema}.locations l
+       join ${schema}.functions f on f.id = $2
+       where l.id = $1
+       limit 1`,
+      [nextLocationId, nextFunctionId],
+    );
+    if (!referenceResult.rows[0]) {
+      throw new ScheduleSeriesError(
+        "series_reference_not_found",
+        "Schedule occurrence location or function not found.",
+      );
+    }
+
+    if (
+      schedule &&
+      Number(schedule.active_assignment_count) > nextRequiredCount
+    ) {
+      throw new ScheduleSeriesError(
+        "series_invalid",
+        "Occurrence has more assignments than the new required count.",
+      );
+    }
+
+    if (schedule) {
+      const assigneesResult = await client.query<{ assignee_id: string }>(
+        `select a.assignee_id
+         from ${schema}.assignments a
+         where a.schedule_slot_id = $1
+           and a.assignee_type = 'person'
+           and a.status in (
+             'invited',
+             'pending',
+             'confirmed',
+             'externally_confirmed'
+           )`,
+        [schedule.slot_id],
+      );
+
+      for (const assignee of assigneesResult.rows) {
+        const hasConflict = await hasOverlappingActiveAssignment(
+          client,
+          schema,
+          assignee.assignee_id,
+          nextStartsAt,
+          nextEndsAt,
+          schedule.id,
+        );
+
+        if (hasConflict) {
+          throw new ScheduleSeriesError(
+            "person_unavailable",
+            "A person has a conflicting schedule occurrence.",
+          );
+        }
+      }
+    }
+
+    await client.query(
+      `delete from ${schema}.schedule_series_exceptions
+       where series_id = $1
+         and occurrence_date = $2::date`,
+      [seriesId, occurrenceDate],
+    );
+
+    if (schedule) {
+      const nextStatus =
+        schedule.status === "cancelled" ? "draft" : schedule.status;
+
+      await client.query(
+        `update ${schema}.schedules
+         set location_id = $2,
+             title = $3,
+             starts_at = $4,
+             ends_at = $5,
+             meeting_point = $6,
+             instructions = $7,
+             status = $8,
+             cancelled_reason = case
+               when status = 'cancelled' then null
+               else cancelled_reason
+             end,
+             cancelled_at = case
+               when status = 'cancelled' then null
+               else cancelled_at
+             end,
+             updated_at = now()
+         where id = $1`,
+        [
+          schedule.id,
+          nextLocationId,
+          nextTitle,
+          nextStartsAt.toISOString(),
+          nextEndsAt.toISOString(),
+          nextMeetingPoint,
+          nextInstructions,
+          nextStatus,
+        ],
+      );
+
+      await client.query(
+        `update ${schema}.schedule_slots
+         set function_id = $2,
+             required_count = $3
+         where id = $1`,
+        [schedule.slot_id, nextFunctionId, nextRequiredCount],
+      );
+    } else {
+      const scheduleResult = await client.query<{ id: string }>(
+        `insert into ${schema}.schedules (
+          series_id,
+          series_occurrence_date,
+          location_id,
+          title,
+          starts_at,
+          ends_at,
+          meeting_point,
+          instructions
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning id`,
+        [
+          seriesId,
+          occurrenceDate,
+          nextLocationId,
+          nextTitle,
+          nextStartsAt.toISOString(),
+          nextEndsAt.toISOString(),
+          nextMeetingPoint,
+          nextInstructions,
+        ],
+      );
+      const createdSchedule = scheduleResult.rows[0];
+      if (!createdSchedule) {
+        throw new Error(
+          "Schedule series occurrence insert did not return a schedule",
+        );
+      }
+
+      await client.query(
+        `insert into ${schema}.schedule_slots (
+          schedule_id,
+          function_id,
+          required_count
+        )
+        values ($1, $2, $3)`,
+        [createdSchedule.id, nextFunctionId, nextRequiredCount],
+      );
+    }
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const series = (await listScheduleSeries(schema)).find(
+    (candidate) => candidate.id === seriesId,
+  );
+  if (!series) {
+    throw new ScheduleSeriesError(
+      "series_not_found",
+      "Schedule series not found.",
+    );
+  }
+
+  return series;
 }
 
 export async function updateScheduleSeriesOccurrence(

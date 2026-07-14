@@ -26,6 +26,7 @@ import {
   SchedulePublicationError,
   ScheduleSeriesError,
   updateScheduleSeries,
+  updateScheduleSeriesOccurrenceDetails,
   updateScheduleSeriesOccurrence,
 } from "./schedule-repository";
 
@@ -132,6 +133,28 @@ const updateScheduleSeriesOccurrenceSchema = z.object({
   skipped: z.boolean(),
   note: optionalTextSchema,
 });
+
+const updateScheduleSeriesOccurrenceDetailsSchema = z
+  .object({
+    title: z.string().trim().min(2).max(160).optional(),
+    locationId: z.string().uuid().optional(),
+    functionId: z.string().uuid().optional(),
+    startsAt: z.string().datetime().optional(),
+    endsAt: z.string().datetime().optional(),
+    requiredCount: z.coerce.number().int().min(1).max(50).optional(),
+    meetingPoint: optionalTextSchema,
+    instructions: optionalTextSchema,
+  })
+  .refine(
+    (value) =>
+      !value.startsAt ||
+      !value.endsAt ||
+      new Date(value.startsAt) < new Date(value.endsAt),
+    {
+      message: "End date must be after start date.",
+      path: ["endsAt"],
+    },
+  );
 
 const updateScheduleSeriesSchema = z
   .object({
@@ -380,6 +403,13 @@ function sendScheduleSeriesError(
     });
   }
 
+  if (error.code === "occurrence_not_editable") {
+    return reply.code(409).send({
+      error: error.code,
+      message: "Essa ocorrencia nao pode ser editada.",
+    });
+  }
+
   return reply.code(400).send({
     error: error.code,
     message: "Confira as datas, excecoes e pessoas da serie.",
@@ -477,6 +507,38 @@ export async function scheduleRoutes(app: FastifyInstance) {
           data: await updateScheduleSeries(
             context.schema,
             params.seriesId,
+            input,
+          ),
+        };
+      } catch (error) {
+        if (error instanceof ScheduleSeriesError) {
+          return sendScheduleSeriesError(error, reply);
+        }
+
+        throw error;
+      }
+    },
+  );
+
+  app.patch(
+    "/tenants/:tenantSlug/schedule-series/:seriesId/occurrences/:occurrenceDate/details",
+    async (request, reply) => {
+      const params = scheduleSeriesOccurrenceParamsSchema.parse(request.params);
+      const context = await resolveTenantContext(params.tenantSlug, reply);
+      if (!context) {
+        return;
+      }
+
+      const input = updateScheduleSeriesOccurrenceDetailsSchema.parse(
+        request.body,
+      );
+
+      try {
+        return {
+          data: await updateScheduleSeriesOccurrenceDetails(
+            context.schema,
+            params.seriesId,
+            params.occurrenceDate,
             input,
           ),
         };
