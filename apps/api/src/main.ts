@@ -8,6 +8,7 @@ import {
   requireTenantManagementAccess,
 } from "./auth/auth-context";
 import { authRoutes } from "./auth/auth-routes";
+import { auditRoutes } from "./audit/audit-routes";
 import { checkDatabase } from "./db/pool";
 import { locationRoutes } from "./locations/location-routes";
 import { memberAccessRoutes } from "./member-access/member-access-routes";
@@ -102,6 +103,7 @@ app.get("/", async () => ({
 
 await app.register(tenantRoutes);
 await app.register(authRoutes);
+await app.register(auditRoutes);
 await app.register(peopleRoutes);
 await app.register(locationRoutes);
 await app.register(scheduleFunctionRoutes);

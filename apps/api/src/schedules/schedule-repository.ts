@@ -1,4 +1,10 @@
 import type { PoolClient } from "pg";
+import {
+  auditActions,
+  recordAuditEvent,
+  systemAuditActor,
+  type AuditActor,
+} from "../audit/audit-repository";
 import { pool } from "../db/pool";
 
 export type ScheduleAssignment = {
@@ -789,6 +795,25 @@ function normalizeOptionalText(value?: string | null) {
   return text ? text : null;
 }
 
+type AuditChanges = Record<
+  string,
+  {
+    before: unknown;
+    after: unknown;
+  }
+>;
+
+function addAuditChange(
+  changes: AuditChanges,
+  field: string,
+  before: unknown,
+  after: unknown,
+) {
+  if (!Object.is(before, after)) {
+    changes[field] = { before, after };
+  }
+}
+
 function buildSeriesOccurrences(
   startsAt: Date,
   endsAt: Date,
@@ -1009,6 +1034,7 @@ function addScheduleSeriesExceptionToMap(
 export async function createScheduleDraft(
   schema: string,
   input: CreateScheduleDraftInput,
+  actor: AuditActor = systemAuditActor,
 ) {
   const client = await pool.connect();
 
@@ -1072,6 +1098,21 @@ export async function createScheduleDraft(
       throw new Error("Schedule summary query did not return a row");
     }
 
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.scheduleCreated,
+      entityType: "schedule",
+      entityId: schedule.id,
+      context: {
+        title: input.title,
+        locationId: input.locationId,
+        functionId: input.functionId,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        requiredCount: input.requiredCount,
+      },
+    });
+
     await client.query("commit");
     return mapScheduleDraft(summary);
   } catch (error) {
@@ -1085,6 +1126,7 @@ export async function createScheduleDraft(
 export async function createScheduleSeries(
   schema: string,
   input: CreateScheduleSeriesInput,
+  actor: AuditActor = systemAuditActor,
 ) {
   const occurrences = getSeriesOccurrences(input);
   if (occurrences.length === 0) {
@@ -1154,6 +1196,7 @@ export async function createScheduleSeries(
   const scheduleIds: string[] = [];
   let seriesId = "";
   let seriesCreatedAt = new Date();
+  let createdAssignments = 0;
 
   try {
     await client.query("begin");
@@ -1325,10 +1368,31 @@ export async function createScheduleSeries(
             isExternallyConfirmed ? "manager" : null,
           ],
         );
+        createdAssignments += 1;
       }
 
       scheduleIds.push(schedule.id);
     }
+
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.seriesCreated,
+      entityType: "schedule_series",
+      entityId: seriesId,
+      context: {
+        title: input.title,
+        locationId: input.locationId,
+        functionId: input.functionId,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        recurrenceIntervalWeeks: input.recurrenceIntervalWeeks,
+        recurrenceEndsOn: input.recurrenceEndsOn,
+        requiredCount: input.requiredCount,
+        createdOccurrences: scheduleIds.length,
+        skippedOccurrences: skippedDates.size,
+        createdAssignments,
+      },
+    });
 
     await client.query("commit");
   } catch (error) {
@@ -1474,6 +1538,7 @@ export async function updateScheduleSeries(
   schema: string,
   seriesId: string,
   input: UpdateScheduleSeriesInput,
+  actor: AuditActor = systemAuditActor,
 ): Promise<UpdateScheduleSeriesResult> {
   const client = await pool.connect();
   const applyFrom = input.applyFrom ?? getDateKey(new Date());
@@ -1895,6 +1960,67 @@ export async function updateScheduleSeries(
       ],
     );
 
+    const changes: AuditChanges = {};
+    addAuditChange(changes, "title", series.title, nextTitle);
+    addAuditChange(changes, "locationId", series.location_id, nextLocationId);
+    addAuditChange(changes, "functionId", series.function_id, nextFunctionId);
+    addAuditChange(
+      changes,
+      "startsAt",
+      series.anchor_starts_at.toISOString(),
+      nextStartsAt.toISOString(),
+    );
+    addAuditChange(
+      changes,
+      "endsAt",
+      series.anchor_ends_at.toISOString(),
+      nextEndsAt.toISOString(),
+    );
+    addAuditChange(
+      changes,
+      "recurrenceIntervalWeeks",
+      series.recurrence_interval_weeks,
+      nextIntervalWeeks,
+    );
+    addAuditChange(
+      changes,
+      "recurrenceEndsOn",
+      getDateKey(series.recurrence_ends_on),
+      nextEndsOn,
+    );
+    addAuditChange(
+      changes,
+      "requiredCount",
+      series.required_count,
+      nextRequiredCount,
+    );
+    addAuditChange(
+      changes,
+      "meetingPoint",
+      series.meeting_point,
+      nextMeetingPoint,
+    );
+    addAuditChange(
+      changes,
+      "instructions",
+      series.instructions,
+      nextInstructions,
+    );
+
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.seriesUpdated,
+      entityType: "schedule_series",
+      entityId: seriesId,
+      context: {
+        applyFrom,
+        changes,
+        createdDraftSchedules,
+        updatedDraftSchedules,
+        cancelledDraftSchedules,
+      },
+    });
+
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -1927,6 +2053,7 @@ export async function updateScheduleSeriesOccurrenceDetails(
   seriesId: string,
   occurrenceDate: string,
   input: UpdateScheduleSeriesOccurrenceDetailsInput,
+  actor: AuditActor = systemAuditActor,
 ) {
   const client = await pool.connect();
 
@@ -2102,6 +2229,55 @@ export async function updateScheduleSeriesOccurrenceDetails(
           ? schedule.instructions
           : series.instructions
         : normalizeOptionalText(input.instructions);
+    const changes: AuditChanges = {};
+    addAuditChange(
+      changes,
+      "title",
+      schedule?.title ?? series.title,
+      nextTitle,
+    );
+    addAuditChange(
+      changes,
+      "locationId",
+      schedule?.location_id ?? series.location_id,
+      nextLocationId,
+    );
+    addAuditChange(
+      changes,
+      "functionId",
+      schedule?.function_id ?? series.function_id,
+      nextFunctionId,
+    );
+    addAuditChange(
+      changes,
+      "startsAt",
+      baseStartsAt.toISOString(),
+      nextStartsAt.toISOString(),
+    );
+    addAuditChange(
+      changes,
+      "endsAt",
+      baseEndsAt.toISOString(),
+      nextEndsAt.toISOString(),
+    );
+    addAuditChange(
+      changes,
+      "requiredCount",
+      schedule?.required_count ?? series.required_count,
+      nextRequiredCount,
+    );
+    addAuditChange(
+      changes,
+      "meetingPoint",
+      schedule ? schedule.meeting_point : series.meeting_point,
+      nextMeetingPoint,
+    );
+    addAuditChange(
+      changes,
+      "instructions",
+      schedule ? schedule.instructions : series.instructions,
+      nextInstructions,
+    );
 
     const referenceResult = await client.query<{ location_id: string }>(
       `select l.id as location_id
@@ -2117,6 +2293,8 @@ export async function updateScheduleSeriesOccurrenceDetails(
         "Schedule occurrence location or function not found.",
       );
     }
+
+    let affectedScheduleId = schedule?.id ?? null;
 
     if (schedule) {
       const activeAssignmentCount = Number(schedule.active_assignment_count);
@@ -2257,6 +2435,7 @@ export async function updateScheduleSeriesOccurrenceDetails(
           "Schedule series occurrence insert did not return a schedule",
         );
       }
+      affectedScheduleId = createdSchedule.id;
 
       await client.query(
         `insert into ${schema}.schedule_slots (
@@ -2268,6 +2447,23 @@ export async function updateScheduleSeriesOccurrenceDetails(
         [createdSchedule.id, nextFunctionId, nextRequiredCount],
       );
     }
+
+    if (!affectedScheduleId) {
+      throw new Error("Schedule occurrence update did not resolve a schedule");
+    }
+
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.occurrenceUpdated,
+      entityType: "schedule_series",
+      entityId: seriesId,
+      context: {
+        occurrenceDate,
+        scheduleId: affectedScheduleId,
+        restoredFromSkip: isSkipped,
+        changes,
+      },
+    });
 
     await client.query("commit");
   } catch (error) {
@@ -2295,6 +2491,7 @@ export async function updateScheduleSeriesOccurrence(
   seriesId: string,
   occurrenceDate: string,
   input: UpdateScheduleSeriesOccurrenceInput,
+  actor: AuditActor = systemAuditActor,
 ) {
   const client = await pool.connect();
   const note = normalizeOptionalText(input.note);
@@ -2361,16 +2558,22 @@ export async function updateScheduleSeriesOccurrence(
       [seriesId, occurrenceDate],
     );
     const schedule = scheduleResult.rows[0] ?? null;
+    let affectedScheduleId = schedule?.id ?? null;
 
-    const exceptionResult = await client.query<{ id: string }>(
-      `select id
+    const exceptionResult = await client.query<{
+      id: string;
+      note: string | null;
+    }>(
+      `select id, note
        from ${schema}.schedule_series_exceptions
        where series_id = $1
          and occurrence_date = $2::date
        limit 1`,
       [seriesId, occurrenceDate],
     );
-    const isSkipped = Boolean(exceptionResult.rows[0]);
+    const exception = exceptionResult.rows[0] ?? null;
+    const isSkipped = Boolean(exception);
+    let occurrenceChanged = false;
 
     if (input.skipped) {
       if (schedule?.status === "published") {
@@ -2405,6 +2608,7 @@ export async function updateScheduleSeriesOccurrence(
         do update set note = excluded.note`,
         [seriesId, occurrenceDate, note],
       );
+      occurrenceChanged = !isSkipped || exception?.note !== note;
 
       if (schedule?.status === "draft") {
         await client.query(
@@ -2416,6 +2620,7 @@ export async function updateScheduleSeriesOccurrence(
            where id = $1`,
           [schedule.id, note ?? "Data pulada na serie"],
         );
+        occurrenceChanged = true;
       }
     } else {
       if (!isSkipped && schedule?.status === "cancelled") {
@@ -2431,6 +2636,7 @@ export async function updateScheduleSeriesOccurrence(
            and occurrence_date = $2::date`,
         [seriesId, occurrenceDate],
       );
+      occurrenceChanged = isSkipped;
 
       if (!schedule) {
         const restoredScheduleResult = await client.query<{ id: string }>(
@@ -2461,6 +2667,7 @@ export async function updateScheduleSeriesOccurrence(
         if (!restoredSchedule) {
           throw new Error("Restored occurrence insert did not return a row");
         }
+        affectedScheduleId = restoredSchedule.id;
 
         await client.query(
           `insert into ${schema}.schedule_slots (
@@ -2471,6 +2678,7 @@ export async function updateScheduleSeriesOccurrence(
           values ($1, $2, $3)`,
           [restoredSchedule.id, series.function_id, series.required_count],
         );
+        occurrenceChanged = true;
       } else if (schedule.status === "cancelled") {
         await client.query(
           `update ${schema}.schedules
@@ -2481,7 +2689,24 @@ export async function updateScheduleSeriesOccurrence(
            where id = $1`,
           [schedule.id],
         );
+        occurrenceChanged = true;
       }
+    }
+
+    if (occurrenceChanged) {
+      await recordAuditEvent(client, schema, {
+        actor,
+        action: input.skipped
+          ? auditActions.occurrenceSkipped
+          : auditActions.occurrenceRestored,
+        entityType: "schedule_series",
+        entityId: seriesId,
+        context: {
+          occurrenceDate,
+          scheduleId: affectedScheduleId,
+          note: input.skipped ? note : (exception?.note ?? null),
+        },
+      });
     }
 
     await client.query("commit");
@@ -2509,6 +2734,7 @@ export async function cancelScheduleSeries(
   schema: string,
   seriesId: string,
   input: CancelScheduleSeriesInput,
+  actor: AuditActor = systemAuditActor,
 ): Promise<CancelScheduleSeriesResult> {
   const client = await pool.connect();
   const note = normalizeOptionalText(input.note);
@@ -2642,6 +2868,21 @@ export async function cancelScheduleSeries(
        where id = $1`,
       [seriesId],
     );
+
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.seriesArchived,
+      entityType: "schedule_series",
+      entityId: seriesId,
+      context: {
+        cancelFrom: input.cancelFrom,
+        note,
+        cancelledSchedules: scheduleIds.length,
+        cancelledAssignments,
+        cancelledReplacementRequests,
+        skippedOccurrences: occurrenceDates.length,
+      },
+    });
 
     await client.query("commit");
 
@@ -2818,6 +3059,7 @@ export async function createScheduleAssignment(
   schema: string,
   scheduleId: string,
   input: CreateScheduleAssignmentInput,
+  actor: AuditActor = systemAuditActor,
 ) {
   const client = await pool.connect();
 
@@ -2972,6 +3214,19 @@ export async function createScheduleAssignment(
       assignment.id,
     );
 
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.assignmentCreated,
+      entityType: "schedule",
+      entityId: scheduleId,
+      context: {
+        assignmentId: assignment.id,
+        personId: input.personId,
+        status: input.status,
+        scheduleSlotId: slot.id,
+      },
+    });
+
     await client.query("commit");
     return mappedAssignment;
   } catch (error) {
@@ -2982,7 +3237,11 @@ export async function createScheduleAssignment(
   }
 }
 
-export async function publishSchedule(schema: string, scheduleId: string) {
+export async function publishSchedule(
+  schema: string,
+  scheduleId: string,
+  actor: AuditActor = systemAuditActor,
+) {
   const client = await pool.connect();
 
   try {
@@ -3030,6 +3289,17 @@ export async function publishSchedule(schema: string, scheduleId: string) {
          where id = $1`,
         [scheduleId],
       );
+
+      await recordAuditEvent(client, schema, {
+        actor,
+        action: auditActions.schedulePublished,
+        entityType: "schedule",
+        entityId: scheduleId,
+        context: {
+          previousStatus: schedule.status,
+          requiredCount: schedule.required_count,
+        },
+      });
     }
 
     await client.query("commit");
@@ -3047,6 +3317,7 @@ export async function cancelSchedule(
   schema: string,
   scheduleId: string,
   input: CancelScheduleInput,
+  actor: AuditActor = systemAuditActor,
 ): Promise<CancelScheduleResult> {
   const client = await pool.connect();
   const reason = input.reason.trim();
@@ -3131,6 +3402,19 @@ export async function cancelSchedule(
     cancelledReplacementRequests =
       cancelledReplacementRequestResult.rowCount ?? 0;
 
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.scheduleCancelled,
+      entityType: "schedule",
+      entityId: scheduleId,
+      context: {
+        reason,
+        previousStatus: schedule.status,
+        cancelledAssignments,
+        cancelledReplacementRequests,
+      },
+    });
+
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -3150,6 +3434,7 @@ export async function inviteReplacementCandidate(
   schema: string,
   replacementRequestId: string,
   personId: string,
+  actor: AuditActor = systemAuditActor,
 ) {
   const client = await pool.connect();
   let scheduleId = "";
@@ -3258,7 +3543,7 @@ export async function inviteReplacementCandidate(
       );
     }
 
-    await client.query(
+    const candidateAssignmentResult = await client.query<{ id: string }>(
       `insert into ${schema}.assignments (
         schedule_slot_id,
         assignee_type,
@@ -3266,9 +3551,14 @@ export async function inviteReplacementCandidate(
         status,
         replacement_request_id
       )
-      values ($1, 'person', $2, 'invited', $3)`,
+      values ($1, 'person', $2, 'invited', $3)
+      returning id`,
       [replacementRequest.schedule_slot_id, personId, replacementRequestId],
     );
+    const candidateAssignment = candidateAssignmentResult.rows[0];
+    if (!candidateAssignment) {
+      throw new Error("Replacement assignment insert did not return a row");
+    }
 
     await client.query(
       `update ${schema}.replacement_requests
@@ -3277,6 +3567,19 @@ export async function inviteReplacementCandidate(
        where id = $1`,
       [replacementRequestId],
     );
+
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.replacementCandidateInvited,
+      entityType: "schedule",
+      entityId: scheduleId,
+      context: {
+        replacementRequestId,
+        originalAssignmentId: replacementRequest.assignment_id,
+        candidateAssignmentId: candidateAssignment.id,
+        candidatePersonId: personId,
+      },
+    });
 
     await client.query("commit");
   } catch (error) {
@@ -3292,6 +3595,7 @@ export async function inviteReplacementCandidate(
 export async function completeReplacementRequest(
   schema: string,
   replacementRequestId: string,
+  actor: AuditActor = systemAuditActor,
 ) {
   const client = await pool.connect();
   let scheduleId = "";
@@ -3345,7 +3649,8 @@ export async function completeReplacementRequest(
       [replacementRequestId],
     );
 
-    if (!candidateResult.rows[0]) {
+    const candidate = candidateResult.rows[0];
+    if (!candidate) {
       throw new ReplacementRequestManagerError(
         "replacement_candidate_not_confirmed",
         "Replacement candidate has not confirmed yet.",
@@ -3368,6 +3673,18 @@ export async function completeReplacementRequest(
       [replacementRequestId],
     );
 
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.replacementCompleted,
+      entityType: "schedule",
+      entityId: scheduleId,
+      context: {
+        replacementRequestId,
+        originalAssignmentId: replacementRequest.assignment_id,
+        candidateAssignmentId: candidate.id,
+      },
+    });
+
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -3384,6 +3701,7 @@ export async function respondToMemberScheduleAssignment(
   personId: string,
   assignmentId: string,
   status: "confirmed" | "declined",
+  actor: AuditActor = { type: "member", personId },
 ) {
   const client = await pool.connect();
 
@@ -3394,10 +3712,16 @@ export async function respondToMemberScheduleAssignment(
     const assignmentResult = await client.query<{
       id: string;
       replacement_request_id: string | null;
+      schedule_id: string;
       schedule_slot_id: string;
       status: string;
     }>(
-      `select a.id, a.replacement_request_id, a.schedule_slot_id, a.status
+      `select
+         a.id,
+         a.replacement_request_id,
+         a.schedule_slot_id,
+         a.status,
+         s.id as schedule_id
        from ${schema}.assignments a
        join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
        join ${schema}.schedules s on s.id = ss.schedule_id
@@ -3465,6 +3789,20 @@ export async function respondToMemberScheduleAssignment(
       );
     }
 
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.assignmentResponded,
+      entityType: "schedule",
+      entityId: assignment.schedule_id,
+      context: {
+        assignmentId,
+        personId,
+        previousStatus: assignment.status,
+        status,
+        replacementRequestId: assignment.replacement_request_id,
+      },
+    });
+
     await client.query("commit");
   } catch (error) {
     await client.query("rollback");
@@ -3481,6 +3819,7 @@ export async function createReplacementRequest(
   personId: string,
   assignmentId: string,
   input: CreateReplacementRequestInput,
+  actor: AuditActor = { type: "member", personId },
 ) {
   const client = await pool.connect();
 
@@ -3489,9 +3828,10 @@ export async function createReplacementRequest(
 
     const assignmentResult = await client.query<{
       id: string;
+      schedule_id: string;
       status: string;
     }>(
-      `select a.id, a.status
+      `select a.id, a.status, s.id as schedule_id
        from ${schema}.assignments a
        join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
        join ${schema}.schedules s on s.id = ss.schedule_id
@@ -3534,16 +3874,35 @@ export async function createReplacementRequest(
       );
     }
 
-    await client.query(
+    const replacementRequestResult = await client.query<{ id: string }>(
       `insert into ${schema}.replacement_requests (
          assignment_id,
          requested_by_person_id,
          reason,
          urgent
        )
-       values ($1, $2, $3, $4)`,
+       values ($1, $2, $3, $4)
+       returning id`,
       [assignmentId, personId, input.reason ?? null, input.urgent ?? false],
     );
+    const replacementRequest = replacementRequestResult.rows[0];
+    if (!replacementRequest) {
+      throw new Error("Replacement request insert did not return a row");
+    }
+
+    await recordAuditEvent(client, schema, {
+      actor,
+      action: auditActions.replacementRequested,
+      entityType: "schedule",
+      entityId: assignment.schedule_id,
+      context: {
+        replacementRequestId: replacementRequest.id,
+        assignmentId,
+        personId,
+        reason: input.reason ?? null,
+        urgent: input.urgent ?? false,
+      },
+    });
 
     await client.query("commit");
   } catch (error) {

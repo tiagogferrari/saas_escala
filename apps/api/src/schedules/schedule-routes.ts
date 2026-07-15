@@ -1,5 +1,6 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
+import type { AuditActor } from "../audit/audit-repository";
 import { resolveTenantContext } from "../tenant-context/tenant-context";
 import {
   NotificationError,
@@ -217,6 +218,19 @@ const createReplacementRequestSchema = z.object({
 const inviteReplacementCandidateSchema = z.object({
   personId: z.string().uuid(),
 });
+
+function getManagerAuditActor(request: FastifyRequest): AuditActor {
+  const manager = request.managerAuth;
+  if (!manager) {
+    return { type: "system" };
+  }
+
+  return {
+    type: "manager",
+    userId: manager.id,
+    displayName: manager.displayName,
+  };
+}
 
 function sendAssignmentError(
   error: ScheduleAssignmentError,
@@ -512,7 +526,11 @@ export async function scheduleRoutes(app: FastifyInstance) {
     }
 
     const input = createScheduleSchema.parse(request.body);
-    const schedule = await createScheduleDraft(context.schema, input);
+    const schedule = await createScheduleDraft(
+      context.schema,
+      input,
+      getManagerAuditActor(request),
+    );
 
     return reply.code(201).send({
       data: schedule,
@@ -541,7 +559,11 @@ export async function scheduleRoutes(app: FastifyInstance) {
     const input = createScheduleSeriesSchema.parse(request.body);
 
     try {
-      const series = await createScheduleSeries(context.schema, input);
+      const series = await createScheduleSeries(
+        context.schema,
+        input,
+        getManagerAuditActor(request),
+      );
       return reply.code(201).send({ data: series });
     } catch (error) {
       if (error instanceof ScheduleSeriesError) {
@@ -569,6 +591,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
             context.schema,
             params.seriesId,
             input,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -601,6 +624,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
             params.seriesId,
             params.occurrenceDate,
             input,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -630,6 +654,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
           params.seriesId,
           params.occurrenceDate,
           input,
+          getManagerAuditActor(request),
         );
 
         return {
@@ -662,6 +687,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
             context.schema,
             params.seriesId,
             input,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -687,6 +713,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
         const schedule = await publishSchedule(
           context.schema,
           params.scheduleId,
+          getManagerAuditActor(request),
         );
         const notifications = await sendScheduleInvitations(
           context.schema,
@@ -723,7 +750,12 @@ export async function scheduleRoutes(app: FastifyInstance) {
 
       try {
         return {
-          data: await cancelSchedule(context.schema, params.scheduleId, input),
+          data: await cancelSchedule(
+            context.schema,
+            params.scheduleId,
+            input,
+            getManagerAuditActor(request),
+          ),
         };
       } catch (error) {
         if (error instanceof ScheduleCancellationError) {
@@ -803,6 +835,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
             params.personId,
             params.assignmentId,
             input.status,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -833,6 +866,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
             params.personId,
             params.assignmentId,
             input,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -862,6 +896,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
             context.schema,
             params.replacementRequestId,
             input.personId,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -888,6 +923,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
           data: await completeReplacementRequest(
             context.schema,
             params.replacementRequestId,
+            getManagerAuditActor(request),
           ),
         };
       } catch (error) {
@@ -942,6 +978,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
           context.schema,
           params.scheduleId,
           input,
+          getManagerAuditActor(request),
         );
 
         const notifications =

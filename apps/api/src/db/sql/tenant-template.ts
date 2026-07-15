@@ -258,13 +258,48 @@ CREATE TABLE IF NOT EXISTS ${schema}.attendance_records (
 
 CREATE TABLE IF NOT EXISTS ${schema}.audit_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  actor_type text NOT NULL DEFAULT 'system',
+  actor_user_id uuid REFERENCES core.global_users (id) ON DELETE SET NULL,
   actor_person_id uuid REFERENCES ${schema}.people (id),
+  actor_label text,
   action text NOT NULL,
   entity_type text NOT NULL,
   entity_id uuid,
   context jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT audit_events_actor_type_check CHECK (
+    actor_type IN ('manager', 'member', 'system')
+  )
 );
+
+ALTER TABLE ${schema}.audit_events
+  ADD COLUMN IF NOT EXISTS actor_type text NOT NULL DEFAULT 'system';
+
+ALTER TABLE ${schema}.audit_events
+  ADD COLUMN IF NOT EXISTS actor_user_id uuid REFERENCES core.global_users (id) ON DELETE SET NULL;
+
+ALTER TABLE ${schema}.audit_events
+  ADD COLUMN IF NOT EXISTS actor_label text;
+
+UPDATE ${schema}.audit_events
+SET actor_type = 'member'
+WHERE actor_person_id IS NOT NULL
+  AND actor_user_id IS NULL
+  AND actor_type = 'system';
+
+ALTER TABLE ${schema}.audit_events
+  DROP CONSTRAINT IF EXISTS audit_events_actor_type_check;
+
+ALTER TABLE ${schema}.audit_events
+  ADD CONSTRAINT audit_events_actor_type_check CHECK (
+    actor_type IN ('manager', 'member', 'system')
+  );
+
+CREATE INDEX IF NOT EXISTS audit_events_created_at_idx
+  ON ${schema}.audit_events (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS audit_events_entity_idx
+  ON ${schema}.audit_events (entity_type, entity_id, created_at DESC);
 
 INSERT INTO ${schema}.functions (name, description, is_default)
 VALUES ('Abertura', 'Responsavel pela abertura do local ou atividade.', true)

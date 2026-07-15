@@ -166,6 +166,11 @@ export async function memberAccessRoutes(app: FastifyInstance) {
               person.id,
               params.assignmentId,
               input.status,
+              {
+                type: "member",
+                personId: person.id,
+                displayName: person.displayName,
+              },
             ),
           },
         };
@@ -208,6 +213,11 @@ export async function memberAccessRoutes(app: FastifyInstance) {
               person.id,
               params.assignmentId,
               input,
+              {
+                type: "member",
+                personId: person.id,
+                displayName: person.displayName,
+              },
             ),
           },
         };
