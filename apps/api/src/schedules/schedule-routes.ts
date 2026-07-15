@@ -433,6 +433,22 @@ function sendScheduleSeriesError(
     });
   }
 
+  if (error.code === "occurrence_capacity_below_assignments") {
+    return reply.code(409).send({
+      error: error.code,
+      message:
+        "A quantidade de vagas nao pode ficar abaixo das pessoas escaladas.",
+    });
+  }
+
+  if (error.code === "occurrence_function_locked") {
+    return reply.code(409).send({
+      error: error.code,
+      message:
+        "Remova ou realoque as pessoas antes de alterar a funcao dessa data.",
+    });
+  }
+
   if (error.code === "occurrence_not_editable") {
     return reply.code(409).send({
       error: error.code,

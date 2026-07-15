@@ -314,7 +314,15 @@ type ScheduleSeriesExistingScheduleRow = {
   id: string;
   occurrence_date: Date;
   status: string;
+  title: string;
+  location_id: string;
+  starts_at: Date;
+  ends_at: Date;
+  meeting_point: string | null;
+  instructions: string | null;
   slot_id: string;
+  function_id: string;
+  required_count: number;
   active_assignment_count: string;
 };
 
@@ -331,6 +339,7 @@ type ScheduleSeriesOccurrenceDetailsScheduleRow = {
   function_id: string;
   required_count: number;
   active_assignment_count: string;
+  effective_assignment_count: string;
 };
 
 type ScheduleSeriesExceptionRow = {
@@ -425,6 +434,8 @@ type ReplacementRequestManagerErrorCode =
   | "schedule_not_assignable";
 
 type ScheduleSeriesErrorCode =
+  | "occurrence_capacity_below_assignments"
+  | "occurrence_function_locked"
   | "occurrence_not_editable"
   | "occurrence_not_restorable"
   | "occurrence_not_skippable"
@@ -1392,12 +1403,25 @@ export async function listScheduleSeries(schema: string) {
        s.instructions,
        s.cancelled_reason,
        s.cancelled_at,
-       count(a.id) filter (where a.status <> 'cancelled') as assignment_count
+       count(a.id) filter (
+         where a.status in (
+           'invited',
+           'pending',
+           'confirmed',
+           'externally_confirmed'
+         )
+           and (
+             a.replacement_request_id is null
+             or linked_rr.status = 'completed'
+           )
+       ) as assignment_count
      from ${schema}.schedules s
      join ${schema}.locations l on l.id = s.location_id
      left join ${schema}.schedule_slots ss on ss.schedule_id = s.id
      left join ${schema}.functions f on f.id = ss.function_id
      left join ${schema}.assignments a on a.schedule_slot_id = ss.id
+     left join ${schema}.replacement_requests linked_rr
+       on linked_rr.id = a.replacement_request_id
      where s.series_id = any($1::uuid[])
        and s.series_occurrence_date is not null
      group by
@@ -1573,7 +1597,15 @@ export async function updateScheduleSeries(
            s.id,
            s.series_occurrence_date as occurrence_date,
            s.status,
+           s.title,
+           s.location_id,
+           s.starts_at,
+           s.ends_at,
+           s.meeting_point,
+           s.instructions,
            ss.id as slot_id,
+           ss.function_id,
+           ss.required_count,
            (
              select count(*)
              from ${schema}.assignments a
@@ -1619,42 +1651,92 @@ export async function updateScheduleSeries(
           continue;
         }
 
-        if (Number(schedule.active_assignment_count) > nextRequiredCount) {
+        const activeAssignmentCount = Number(schedule.active_assignment_count);
+        const nextScheduleTitle =
+          input.title === undefined ? schedule.title : nextTitle;
+        const nextScheduleLocationId =
+          input.locationId === undefined
+            ? schedule.location_id
+            : nextLocationId;
+        const timeRangeChangedBySeries =
+          input.startsAt !== undefined || input.endsAt !== undefined;
+        const nextScheduleStartsAt = timeRangeChangedBySeries
+          ? occurrence.startsAt
+          : schedule.starts_at;
+        const nextScheduleEndsAt = timeRangeChangedBySeries
+          ? occurrence.endsAt
+          : schedule.ends_at;
+        const nextScheduleMeetingPoint =
+          input.meetingPoint === undefined
+            ? schedule.meeting_point
+            : nextMeetingPoint;
+        const nextScheduleInstructions =
+          input.instructions === undefined
+            ? schedule.instructions
+            : nextInstructions;
+        const nextScheduleFunctionId =
+          input.functionId === undefined
+            ? schedule.function_id
+            : nextFunctionId;
+        const nextScheduleRequiredCount =
+          input.requiredCount === undefined
+            ? schedule.required_count
+            : nextRequiredCount;
+
+        const functionChanged = schedule.function_id !== nextScheduleFunctionId;
+        if (functionChanged && activeAssignmentCount > 0) {
           throw new ScheduleSeriesError(
-            "series_invalid",
-            "Draft schedule has more assignments than the new required count.",
+            "occurrence_function_locked",
+            "Draft occurrence function cannot change while it has assignments.",
           );
         }
 
-        const assigneesResult = await client.query<{ assignee_id: string }>(
-          `select a.assignee_id
-           from ${schema}.assignments a
-           where a.schedule_slot_id = $1
-             and a.assignee_type = 'person'
-             and a.status in (
-               'invited',
-               'pending',
-               'confirmed',
-               'externally_confirmed'
-             )`,
-          [schedule.slot_id],
-        );
+        const capacityReduced =
+          nextScheduleRequiredCount < schedule.required_count;
+        if (
+          capacityReduced &&
+          activeAssignmentCount > nextScheduleRequiredCount
+        ) {
+          throw new ScheduleSeriesError(
+            "occurrence_capacity_below_assignments",
+            "Draft occurrence cannot have fewer slots than assignments.",
+          );
+        }
 
-        for (const assignee of assigneesResult.rows) {
-          const hasConflict = await hasOverlappingActiveAssignment(
-            client,
-            schema,
-            assignee.assignee_id,
-            occurrence.startsAt,
-            occurrence.endsAt,
-            schedule.id,
+        const timeChanged =
+          schedule.starts_at.getTime() !== nextScheduleStartsAt.getTime() ||
+          schedule.ends_at.getTime() !== nextScheduleEndsAt.getTime();
+        if (timeChanged) {
+          const assigneesResult = await client.query<{ assignee_id: string }>(
+            `select a.assignee_id
+             from ${schema}.assignments a
+             where a.schedule_slot_id = $1
+               and a.assignee_type = 'person'
+               and a.status in (
+                 'invited',
+                 'pending',
+                 'confirmed',
+                 'externally_confirmed'
+               )`,
+            [schedule.slot_id],
           );
 
-          if (hasConflict) {
-            throw new ScheduleSeriesError(
-              "person_unavailable",
-              "A person has a conflicting schedule occurrence.",
+          for (const assignee of assigneesResult.rows) {
+            const hasConflict = await hasOverlappingActiveAssignment(
+              client,
+              schema,
+              assignee.assignee_id,
+              nextScheduleStartsAt,
+              nextScheduleEndsAt,
+              schedule.id,
             );
+
+            if (hasConflict) {
+              throw new ScheduleSeriesError(
+                "person_unavailable",
+                "A person has a conflicting schedule occurrence.",
+              );
+            }
           }
         }
 
@@ -1671,12 +1753,12 @@ export async function updateScheduleSeries(
              and status = 'draft'`,
           [
             schedule.id,
-            nextLocationId,
-            nextTitle,
-            occurrence.startsAt.toISOString(),
-            occurrence.endsAt.toISOString(),
-            nextMeetingPoint,
-            nextInstructions,
+            nextScheduleLocationId,
+            nextScheduleTitle,
+            nextScheduleStartsAt.toISOString(),
+            nextScheduleEndsAt.toISOString(),
+            nextScheduleMeetingPoint,
+            nextScheduleInstructions,
           ],
         );
 
@@ -1685,7 +1767,7 @@ export async function updateScheduleSeries(
            set function_id = $2,
                required_count = $3
            where id = $1`,
-          [schedule.slot_id, nextFunctionId, nextRequiredCount],
+          [schedule.slot_id, nextScheduleFunctionId, nextScheduleRequiredCount],
         );
 
         updatedDraftSchedules += 1;
@@ -1925,7 +2007,24 @@ export async function updateScheduleSeriesOccurrenceDetails(
                  'confirmed',
                  'externally_confirmed'
                )
-           ) as active_assignment_count
+           ) as active_assignment_count,
+           (
+             select count(*)
+             from ${schema}.assignments a
+             left join ${schema}.replacement_requests linked_rr
+               on linked_rr.id = a.replacement_request_id
+             where a.schedule_slot_id = ss.id
+               and a.status in (
+                 'invited',
+                 'pending',
+                 'confirmed',
+                 'externally_confirmed'
+               )
+               and (
+                 a.replacement_request_id is null
+                 or linked_rr.status = 'completed'
+               )
+           ) as effective_assignment_count
          from ${schema}.schedules s
          join ${schema}.schedule_slots ss on ss.schedule_id = s.id
          where s.series_id = $1
@@ -2019,46 +2118,61 @@ export async function updateScheduleSeriesOccurrenceDetails(
       );
     }
 
-    if (
-      schedule &&
-      Number(schedule.active_assignment_count) > nextRequiredCount
-    ) {
-      throw new ScheduleSeriesError(
-        "series_invalid",
-        "Occurrence has more assignments than the new required count.",
-      );
-    }
-
     if (schedule) {
-      const assigneesResult = await client.query<{ assignee_id: string }>(
-        `select a.assignee_id
-         from ${schema}.assignments a
-         where a.schedule_slot_id = $1
-           and a.assignee_type = 'person'
-           and a.status in (
-             'invited',
-             'pending',
-             'confirmed',
-             'externally_confirmed'
-           )`,
-        [schedule.slot_id],
-      );
+      const activeAssignmentCount = Number(schedule.active_assignment_count);
+      const functionChanged = schedule.function_id !== nextFunctionId;
+      if (functionChanged && activeAssignmentCount > 0) {
+        throw new ScheduleSeriesError(
+          "occurrence_function_locked",
+          "Occurrence function cannot change while it has assignments.",
+        );
+      }
 
-      for (const assignee of assigneesResult.rows) {
-        const hasConflict = await hasOverlappingActiveAssignment(
-          client,
-          schema,
-          assignee.assignee_id,
-          nextStartsAt,
-          nextEndsAt,
-          schedule.id,
+      const effectiveAssignmentCount = Number(
+        schedule.effective_assignment_count,
+      );
+      const capacityReduced = nextRequiredCount < schedule.required_count;
+      if (capacityReduced && effectiveAssignmentCount > nextRequiredCount) {
+        throw new ScheduleSeriesError(
+          "occurrence_capacity_below_assignments",
+          "Occurrence cannot have fewer slots than effective assignments.",
+        );
+      }
+
+      const timeChanged =
+        nextStartsAt.getTime() !== baseStartsAt.getTime() ||
+        nextEndsAt.getTime() !== baseEndsAt.getTime();
+      if (timeChanged) {
+        const assigneesResult = await client.query<{ assignee_id: string }>(
+          `select a.assignee_id
+           from ${schema}.assignments a
+           where a.schedule_slot_id = $1
+             and a.assignee_type = 'person'
+             and a.status in (
+               'invited',
+               'pending',
+               'confirmed',
+               'externally_confirmed'
+             )`,
+          [schedule.slot_id],
         );
 
-        if (hasConflict) {
-          throw new ScheduleSeriesError(
-            "person_unavailable",
-            "A person has a conflicting schedule occurrence.",
+        for (const assignee of assigneesResult.rows) {
+          const hasConflict = await hasOverlappingActiveAssignment(
+            client,
+            schema,
+            assignee.assignee_id,
+            nextStartsAt,
+            nextEndsAt,
+            schedule.id,
           );
+
+          if (hasConflict) {
+            throw new ScheduleSeriesError(
+              "person_unavailable",
+              "A person has a conflicting schedule occurrence.",
+            );
+          }
         }
       }
     }
@@ -2745,7 +2859,8 @@ export async function createScheduleAssignment(
        join ${schema}.schedule_slots ss on ss.schedule_id = s.id
        where s.id = $1
        order by ss.created_at asc
-       limit 1`,
+       limit 1
+       for update of s, ss`,
       [scheduleId],
     );
 
@@ -2800,9 +2915,20 @@ export async function createScheduleAssignment(
 
     const activeCountResult = await client.query<{ active_count: string }>(
       `select count(*) as active_count
-       from ${schema}.assignments
-       where schedule_slot_id = $1
-         and status in ('invited', 'pending', 'confirmed', 'externally_confirmed')`,
+       from ${schema}.assignments a
+       left join ${schema}.replacement_requests linked_rr
+         on linked_rr.id = a.replacement_request_id
+       where a.schedule_slot_id = $1
+         and a.status in (
+           'invited',
+           'pending',
+           'confirmed',
+           'externally_confirmed'
+         )
+         and (
+           a.replacement_request_id is null
+           or linked_rr.status = 'completed'
+         )`,
       [slot.id],
     );
 
@@ -2875,7 +3001,8 @@ export async function publishSchedule(schema: string, scheduleId: string) {
        join ${schema}.schedule_slots ss on ss.schedule_id = s.id
        where s.id = $1
        order by ss.created_at asc
-       limit 1`,
+       limit 1
+       for update of s, ss`,
       [scheduleId],
     );
 
@@ -3068,7 +3195,8 @@ export async function inviteReplacementCandidate(
        join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
        join ${schema}.schedules s on s.id = ss.schedule_id
        where rr.id = $1
-       limit 1`,
+       limit 1
+       for update of rr, s, ss`,
       [replacementRequestId],
     );
 
