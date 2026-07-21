@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { pool } from "../db/pool";
 import {
   insertTenant,
@@ -16,28 +15,16 @@ import {
   requireManagerSession,
   setSessionCookie,
 } from "./auth-context";
+import {
+  credentialsSchema,
+  setupSchema,
+  type SetupInput,
+} from "./auth.schemas";
 import { hashPassword, normalizeEmail, verifyPassword } from "./passwords";
-
-const credentialsSchema = z.object({
-  email: z.string().trim().email().max(180),
-  password: z.string().min(12).max(128),
-});
-
-const setupSchema = credentialsSchema.extend({
-  displayName: z.string().trim().min(2).max(120),
-  tenantSlug: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
-    .min(3)
-    .max(60),
-  tenantDisplayName: z.string().trim().min(2).max(120).optional(),
-});
 
 const isProduction = process.env.NODE_ENV === "production";
 
-async function createFirstManager(input: z.infer<typeof setupSchema>) {
+async function createFirstManager(input: SetupInput) {
   const client = await pool.connect();
 
   try {

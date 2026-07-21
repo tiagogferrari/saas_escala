@@ -1,25 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
 import {
   createScheduleFunction,
   listScheduleFunctions,
 } from "./function-repository";
-
-const tenantParamsSchema = z.object({
-  tenantSlug: z.string().min(1),
-});
-
-const createFunctionSchema = z.object({
-  name: z.string().trim().min(2).max(80),
-  description: z
-    .string()
-    .trim()
-    .max(240)
-    .optional()
-    .or(z.literal(""))
-    .transform((value) => (value === "" ? null : value)),
-});
+import {
+  createFunctionSchema,
+  tenantParamsSchema,
+} from "./schedule-functions.schemas";
 
 function isUniqueViolation(error: unknown) {
   return (

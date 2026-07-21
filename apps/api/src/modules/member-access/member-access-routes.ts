@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { z } from "zod";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
 import {
   createMemberAccessToken,
@@ -12,37 +11,13 @@ import {
   MemberScheduleError,
   respondToMemberScheduleAssignment,
 } from "../schedules/schedule-repository";
-
-const tenantParamsSchema = z.object({
-  tenantSlug: z.string().min(1),
-});
-
-const personParamsSchema = tenantParamsSchema.extend({
-  personId: z.string().uuid(),
-});
-
-const accessTokenParamsSchema = tenantParamsSchema.extend({
-  accessToken: z.string().min(20).max(200),
-});
-
-const accessAssignmentParamsSchema = accessTokenParamsSchema.extend({
-  assignmentId: z.string().uuid(),
-});
-
-const respondAssignmentSchema = z.object({
-  status: z.enum(["confirmed", "declined"]),
-});
-
-const createReplacementRequestSchema = z.object({
-  reason: z
-    .string()
-    .trim()
-    .max(500)
-    .optional()
-    .or(z.literal(""))
-    .transform((value) => (value === "" ? null : value)),
-  urgent: z.boolean().optional().default(false),
-});
+import {
+  accessAssignmentParamsSchema,
+  accessTokenParamsSchema,
+  createReplacementRequestSchema,
+  personParamsSchema,
+  respondAssignmentSchema,
+} from "./member-access.schemas";
 
 function sendMemberAccessError(error: MemberAccessError, reply: FastifyReply) {
   if (error.code === "person_not_found") {

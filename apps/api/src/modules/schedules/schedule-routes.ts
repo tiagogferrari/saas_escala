@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { z } from "zod";
 import type { AuditActor } from "../audit/audit-repository";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
 import {
@@ -32,192 +31,27 @@ import {
   updateScheduleSeriesOccurrenceDetails,
   updateScheduleSeriesOccurrence,
 } from "./schedule-repository";
-
-const occurrenceDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-
-const tenantParamsSchema = z.object({
-  tenantSlug: z.string().min(1),
-});
-
-const scheduleParamsSchema = tenantParamsSchema.extend({
-  scheduleId: z.string().uuid(),
-});
-
-const scheduleSeriesParamsSchema = tenantParamsSchema.extend({
-  seriesId: z.string().uuid(),
-});
-
-const scheduleSeriesOccurrenceParamsSchema = scheduleSeriesParamsSchema.extend({
-  occurrenceDate: occurrenceDateSchema,
-});
-
-const assignmentInvitationParamsSchema = scheduleParamsSchema.extend({
-  assignmentId: z.string().uuid(),
-});
-
-const memberParamsSchema = tenantParamsSchema.extend({
-  personId: z.string().uuid(),
-});
-
-const memberResponseParamsSchema = memberParamsSchema.extend({
-  assignmentId: z.string().uuid(),
-});
-
-const replacementRequestParamsSchema = tenantParamsSchema.extend({
-  replacementRequestId: z.string().uuid(),
-});
-
-const optionalTextSchema = z
-  .string()
-  .trim()
-  .max(500)
-  .nullable()
-  .optional()
-  .transform((value) => (value === "" ? null : value));
-
-const createScheduleSchema = z
-  .object({
-    title: z.string().trim().min(2).max(160),
-    locationId: z.string().uuid(),
-    functionId: z.string().uuid(),
-    startsAt: z.string().datetime(),
-    endsAt: z.string().datetime(),
-    requiredCount: z.coerce.number().int().min(1).max(50).default(1),
-    meetingPoint: optionalTextSchema,
-    instructions: optionalTextSchema,
-  })
-  .refine((value) => new Date(value.startsAt) < new Date(value.endsAt), {
-    message: "End date must be after start date.",
-    path: ["endsAt"],
-  });
-
-const createScheduleSeriesSchema = z
-  .object({
-    title: z.string().trim().min(2).max(160),
-    locationId: z.string().uuid(),
-    functionId: z.string().uuid(),
-    startsAt: z.string().datetime(),
-    endsAt: z.string().datetime(),
-    recurrenceIntervalWeeks: z.coerce.number().int().min(1).max(12),
-    recurrenceEndsOn: occurrenceDateSchema,
-    requiredCount: z.coerce.number().int().min(1).max(50).default(1),
-    meetingPoint: optionalTextSchema,
-    instructions: optionalTextSchema,
-    skippedDates: z.array(occurrenceDateSchema).max(104).default([]),
-    skippedOccurrences: z
-      .array(
-        z.object({
-          occurrenceDate: occurrenceDateSchema,
-          note: optionalTextSchema,
-        }),
-      )
-      .max(104)
-      .default([]),
-    defaultAssignmentPersonIds: z.array(z.string().uuid()).max(50).default([]),
-    occurrenceAssignmentOverrides: z
-      .array(
-        z.object({
-          occurrenceDate: occurrenceDateSchema,
-          personIds: z.array(z.string().uuid()).max(50),
-        }),
-      )
-      .max(104)
-      .default([]),
-    assignmentStatus: z
-      .enum(["invited", "externally_confirmed"])
-      .default("invited"),
-  })
-  .refine((value) => new Date(value.startsAt) < new Date(value.endsAt), {
-    message: "End date must be after start date.",
-    path: ["endsAt"],
-  });
-
-const updateScheduleSeriesOccurrenceSchema = z.object({
-  skipped: z.boolean(),
-  note: optionalTextSchema,
-});
-
-const updateScheduleSeriesOccurrenceDetailsSchema = z
-  .object({
-    title: z.string().trim().min(2).max(160).optional(),
-    locationId: z.string().uuid().optional(),
-    functionId: z.string().uuid().optional(),
-    startsAt: z.string().datetime().optional(),
-    endsAt: z.string().datetime().optional(),
-    requiredCount: z.coerce.number().int().min(1).max(50).optional(),
-    meetingPoint: optionalTextSchema,
-    instructions: optionalTextSchema,
-  })
-  .refine(
-    (value) =>
-      !value.startsAt ||
-      !value.endsAt ||
-      new Date(value.startsAt) < new Date(value.endsAt),
-    {
-      message: "End date must be after start date.",
-      path: ["endsAt"],
-    },
-  );
-
-const updateScheduleSeriesSchema = z
-  .object({
-    title: z.string().trim().min(2).max(160).optional(),
-    locationId: z.string().uuid().optional(),
-    functionId: z.string().uuid().optional(),
-    startsAt: z.string().datetime().optional(),
-    endsAt: z.string().datetime().optional(),
-    recurrenceIntervalWeeks: z.coerce.number().int().min(1).max(12).optional(),
-    recurrenceEndsOn: occurrenceDateSchema.optional(),
-    requiredCount: z.coerce.number().int().min(1).max(50).optional(),
-    meetingPoint: optionalTextSchema,
-    instructions: optionalTextSchema,
-    applyFrom: occurrenceDateSchema.optional(),
-  })
-  .refine(
-    (value) =>
-      !value.startsAt ||
-      !value.endsAt ||
-      new Date(value.startsAt) < new Date(value.endsAt),
-    {
-      message: "End date must be after start date.",
-      path: ["endsAt"],
-    },
-  );
-
-const cancelScheduleSeriesSchema = z.object({
-  cancelFrom: occurrenceDateSchema,
-  note: optionalTextSchema,
-});
-
-const cancelScheduleSchema = z.object({
-  reason: z.string().trim().min(2).max(500),
-});
-
-const createAssignmentSchema = z.object({
-  personId: z.string().uuid(),
-  status: z
-    .enum(["invited", "externally_confirmed"])
-    .default("externally_confirmed"),
-});
-
-const respondAssignmentSchema = z.object({
-  status: z.enum(["confirmed", "declined"]),
-});
-
-const createReplacementRequestSchema = z.object({
-  reason: z
-    .string()
-    .trim()
-    .max(500)
-    .optional()
-    .or(z.literal(""))
-    .transform((value) => (value === "" ? null : value)),
-  urgent: z.boolean().optional().default(false),
-});
-
-const inviteReplacementCandidateSchema = z.object({
-  personId: z.string().uuid(),
-});
+import {
+  assignmentInvitationParamsSchema,
+  cancelScheduleSchema,
+  cancelScheduleSeriesSchema,
+  createAssignmentSchema,
+  createReplacementRequestSchema,
+  createScheduleSchema,
+  createScheduleSeriesSchema,
+  inviteReplacementCandidateSchema,
+  memberParamsSchema,
+  memberResponseParamsSchema,
+  replacementRequestParamsSchema,
+  respondAssignmentSchema,
+  scheduleParamsSchema,
+  scheduleSeriesOccurrenceParamsSchema,
+  scheduleSeriesParamsSchema,
+  tenantParamsSchema,
+  updateScheduleSeriesOccurrenceDetailsSchema,
+  updateScheduleSeriesOccurrenceSchema,
+  updateScheduleSeriesSchema,
+} from "./schedule.schemas";
 
 function getManagerAuditActor(request: FastifyRequest): AuditActor {
   const manager = request.managerAuth;

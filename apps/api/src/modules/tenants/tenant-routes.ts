@@ -1,19 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { createTenant, listTenantsForUser } from "./tenant-repository";
-
-const createTenantSchema = z.object({
-  slug: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
-    .min(3)
-    .max(60),
-  displayName: z.string().trim().min(2).max(120),
-  timezone: z.string().trim().min(1).default("America/Sao_Paulo"),
-  locale: z.string().trim().min(2).default("pt-BR"),
-});
+import { createTenantSchema } from "./tenants.schemas";
 
 export async function tenantRoutes(app: FastifyInstance) {
   app.get("/tenants", async (request, reply) => {

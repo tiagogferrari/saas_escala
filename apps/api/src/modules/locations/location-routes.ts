@@ -1,29 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { createLocation, listLocations } from "./location-repository";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
-
-const tenantParamsSchema = z.object({
-  tenantSlug: z.string().min(1),
-});
-
-const createLocationSchema = z.object({
-  name: z.string().trim().min(2).max(140),
-  address: z
-    .string()
-    .trim()
-    .max(240)
-    .optional()
-    .or(z.literal(""))
-    .transform((value) => (value === "" ? null : value)),
-  timezone: z
-    .string()
-    .trim()
-    .max(80)
-    .optional()
-    .or(z.literal(""))
-    .transform((value) => (value === "" ? null : value)),
-});
+import { createLocationSchema, tenantParamsSchema } from "./locations.schemas";
 
 export async function locationRoutes(app: FastifyInstance) {
   app.get("/tenants/:tenantSlug/locations", async (request, reply) => {
