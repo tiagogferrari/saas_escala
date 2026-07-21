@@ -1,0 +1,87 @@
+name: Backend CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: API checks
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: escala_saas
+          POSTGRES_USER: escala
+          POSTGRES_PASSWORD: escala_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U escala -d escala_saas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mailpit:
+        image: axllent/mailpit:latest
+        ports:
+          - 1025:1025
+          - 8025:8025
+
+    env:
+      NODE_ENV: test
+      APP_URL: http://localhost:3000
+      API_URL: http://localhost:3333
+      NEXT_PUBLIC_API_URL: http://localhost:3333
+      API_HOST: 0.0.0.0
+      API_PORT: 3333
+      DATABASE_URL: postgresql://escala:escala_dev@localhost:5432/escala_saas
+      REDIS_URL: redis://localhost:6379
+      MAIL_HOST: localhost
+      MAIL_PORT: 1025
+      MAIL_FROM: no-reply@escala.local
+      MAIL_SECURE: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --filter @escala/api typecheck
+
+      - name: Run database migrations
+        run: pnpm db:migrate
+
+      - name: Run API tests
+        run: pnpm --filter @escala/api test
+
+      - name: Build
+        run: pnpm --filter @escala/api build
