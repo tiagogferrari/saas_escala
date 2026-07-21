@@ -6,17 +6,17 @@ import "./config/load-env";
 import {
   requireManagerSession,
   requireTenantManagementAccess,
-} from "./auth/auth-context";
-import { authRoutes } from "./auth/auth-routes";
-import { auditRoutes } from "./audit/audit-routes";
-import { checkDatabase } from "./db/pool";
-import { locationRoutes } from "./locations/location-routes";
-import { memberAccessRoutes } from "./member-access/member-access-routes";
-import { startNotificationScheduler } from "./notifications/notification-scheduler";
-import { peopleRoutes } from "./people/people-routes";
-import { scheduleFunctionRoutes } from "./schedule-functions/function-routes";
-import { scheduleRoutes } from "./schedules/schedule-routes";
-import { tenantRoutes } from "./tenants/tenant-routes";
+} from "./shared/auth/auth-context";
+import { authRoutes } from "./shared/auth/auth-routes";
+import { auditRoutes } from "./modules/audit/audit-routes";
+import { checkDatabase } from "./shared/db/pool";
+import { locationRoutes } from "./modules/locations/location-routes";
+import { memberAccessRoutes } from "./modules/member-access/member-access-routes";
+import { startNotificationScheduler } from "./modules/notifications/notification-scheduler";
+import { peopleRoutes } from "./modules/people/people-routes";
+import { scheduleFunctionRoutes } from "./modules/schedule-functions/function-routes";
+import { scheduleRoutes } from "./modules/schedules/schedule-routes";
+import { tenantRoutes } from "./modules/tenants/tenant-routes";
 
 const envSchema = z.object({
   API_HOST: z.string().default("0.0.0.0"),
