@@ -1,17 +1,13 @@
 import { pool } from "../../shared/db/pool";
+import type {
+  CreateScheduleFunctionInput,
+  ScheduleFunction,
+} from "./schedule-functions.types";
 
-export type ScheduleFunction = {
-  id: string;
-  name: string;
-  description: string | null;
-  isDefault: boolean;
-  createdAt: string;
-};
-
-export type CreateScheduleFunctionInput = {
-  name: string;
-  description?: string | null;
-};
+export type {
+  CreateScheduleFunctionInput,
+  ScheduleFunction,
+} from "./schedule-functions.types";
 
 type ScheduleFunctionRow = {
   id: string;
@@ -59,4 +55,3 @@ export async function listScheduleFunctions(schema: string) {
 
   return result.rows.map(mapScheduleFunction);
 }
-

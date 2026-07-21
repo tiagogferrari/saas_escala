@@ -3,7 +3,7 @@ import {
   recordAuditEvent,
   systemAuditActor,
   type AuditActor,
-} from "../audit/audit-repository";
+} from "../audit/audit.repository";
 import { pool } from "../../shared/db/pool";
 import {
   ScheduleCancellationError,

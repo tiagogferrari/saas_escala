@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { sendDueScheduleReminders } from "./notification-service";
+import { sendDueScheduleReminders } from "./notifications.service";
 
 const reminderIntervalMs = 15 * 60 * 1000;
 
@@ -24,4 +24,3 @@ export function startNotificationScheduler(app: FastifyInstance) {
     clearInterval(interval);
   });
 }
-

@@ -1,18 +1,7 @@
 import { pool } from "../../shared/db/pool";
+import type { CreateLocationInput, Location } from "./locations.types";
 
-export type Location = {
-  id: string;
-  name: string;
-  address: string | null;
-  timezone: string | null;
-  createdAt: string;
-};
-
-export type CreateLocationInput = {
-  name: string;
-  address?: string | null;
-  timezone?: string | null;
-};
+export type { CreateLocationInput, Location } from "./locations.types";
 
 type LocationRow = {
   id: string;
@@ -60,4 +49,3 @@ export async function listLocations(schema: string) {
 
   return result.rows.map(mapLocation);
 }
-

@@ -1,54 +1,31 @@
 import { quoteIdentifier } from "../../shared/db/identifiers";
-import { createMemberAccessToken } from "../member-access/member-access-repository";
-import type { Tenant } from "../tenants/tenant-repository";
-import { listActiveTenants } from "../tenants/tenant-repository";
+import { createMemberAccessToken } from "../member-access/member-access.repository";
+import type { Tenant } from "../tenants/tenants.types";
+import { listActiveTenants } from "../tenants/tenants.repository";
 import { pool } from "../../shared/db/pool";
-import { sendEmail } from "./email-sender";
+import { sendEmail } from "./email.sender";
+import { NotificationError } from "./notifications.errors";
+import {
+  buildNotificationEmail,
+  createMemberAccessUrl,
+  getInvitationSubject,
+  getReminderSubject,
+} from "./notifications.email";
+import { buildCandidatesQuery } from "./notifications.queries";
+import type {
+  NotificationCandidate,
+  NotificationDispatchSummary,
+  NotificationKind,
+  QueuedNotification,
+  QueueResult,
+} from "./notifications.types";
 
-type NotificationKind = "schedule_invitation" | "schedule_reminder_24h";
-
-type NotificationCandidate = {
-  assignment_id: string;
-  person_id: string;
-  recipient_email: string | null;
-  person_name: string;
-  schedule_title: string;
-  starts_at: Date;
-  ends_at: Date;
-  location_name: string;
-  function_name: string;
-};
-
-type QueuedNotification = Omit<NotificationCandidate, "recipient_email"> & {
-  id: string;
-  kind: NotificationKind;
-  recipient_email: string;
-  subject: string;
-};
-
-export type NotificationDispatchSummary = {
-  failed: number;
-  queued: number;
-  sent: number;
-  skippedNoEmail: number;
-};
-
-type QueueResult = NotificationDispatchSummary & {
-  notificationIds: string[];
-};
-
-export type NotificationErrorCode =
-  | "assignment_not_invitable"
-  | "person_without_email";
-
-export class NotificationError extends Error {
-  constructor(
-    public readonly code: NotificationErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { NotificationError } from "./notifications.errors";
+export type {
+  NotificationDispatchSummary,
+  NotificationErrorCode,
+  NotificationKind,
+} from "./notifications.types";
 
 function emptySummary(): NotificationDispatchSummary {
   return {
@@ -57,111 +34,6 @@ function emptySummary(): NotificationDispatchSummary {
     sent: 0,
     skippedNoEmail: 0,
   };
-}
-
-function getAppUrl() {
-  return (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
-}
-
-function getInvitationSubject(candidate: NotificationCandidate) {
-  return `Convite para a escala ${candidate.schedule_title}`;
-}
-
-function getReminderSubject(candidate: NotificationCandidate) {
-  return `Lembrete: confirme a escala ${candidate.schedule_title}`;
-}
-
-function formatScheduleDate(date: Date) {
-  return new Intl.DateTimeFormat("pt-BR", {
-    dateStyle: "full",
-    timeStyle: "short",
-    timeZone: "America/Sao_Paulo",
-  }).format(date);
-}
-
-function escapeHtmlText(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function createMemberAccessUrl(tenantSlug: string, token: string) {
-  const url = new URL(getAppUrl());
-  url.searchParams.set("tenant", tenantSlug);
-  url.searchParams.set("memberToken", token);
-  return url.toString();
-}
-
-function buildEmail(
-  tenant: Tenant,
-  notification: QueuedNotification,
-  memberAccessUrl: string,
-) {
-  const isReminder = notification.kind === "schedule_reminder_24h";
-  const opening = isReminder
-    ? "Este e um lembrete para responder sua escala."
-    : "Voce foi convidado para uma escala.";
-  const action = isReminder ? "Confirmar ou recusar" : "Responder ao convite";
-  const scheduleDate = formatScheduleDate(notification.starts_at);
-  const text = [
-    `Ola, ${notification.person_name}.`,
-    "",
-    opening,
-    `Escala: ${notification.schedule_title}`,
-    `Funcao: ${notification.function_name}`,
-    `Data: ${scheduleDate}`,
-    `Local: ${notification.location_name}`,
-    "",
-    `${action}: ${memberAccessUrl}`,
-    "",
-    tenant.displayName,
-  ].join("\n");
-
-  const html = `
-    <p>Ola, ${escapeHtmlText(notification.person_name)}.</p>
-    <p>${escapeHtmlText(opening)}</p>
-    <p>
-      <strong>Escala:</strong> ${escapeHtmlText(notification.schedule_title)}<br />
-      <strong>Funcao:</strong> ${escapeHtmlText(notification.function_name)}<br />
-      <strong>Data:</strong> ${escapeHtmlText(scheduleDate)}<br />
-      <strong>Local:</strong> ${escapeHtmlText(notification.location_name)}
-    </p>
-    <p><a href="${escapeHtmlText(memberAccessUrl)}">${escapeHtmlText(action)}</a></p>
-    <p>${escapeHtmlText(tenant.displayName)}</p>
-  `;
-
-  return {
-    text,
-    html,
-  };
-}
-
-function buildCandidatesQuery(schema: string, condition: string) {
-  return `
-    select
-      a.id as assignment_id,
-      p.id as person_id,
-      p.email as recipient_email,
-      p.display_name as person_name,
-      s.title as schedule_title,
-      s.starts_at,
-      s.ends_at,
-      l.name as location_name,
-      f.name as function_name
-    from ${schema}.assignments a
-    join ${schema}.people p on p.id = a.assignee_id
-    join ${schema}.schedule_slots ss on ss.id = a.schedule_slot_id
-    join ${schema}.schedules s on s.id = ss.schedule_id
-    join ${schema}.locations l on l.id = s.location_id
-    join ${schema}.functions f on f.id = ss.function_id
-    where a.assignee_type = 'person'
-      and a.status in ('invited', 'pending')
-      and s.status = 'published'
-      and ${condition}
-  `;
 }
 
 async function queueCandidates(
@@ -264,7 +136,11 @@ async function dispatchQueuedNotifications(
         notification.person_id,
       );
       const memberAccessUrl = createMemberAccessUrl(tenant.slug, access.token);
-      const email = buildEmail(tenant, notification, memberAccessUrl);
+      const email = buildNotificationEmail(
+        tenant,
+        notification,
+        memberAccessUrl,
+      );
 
       await sendEmail({
         to: notification.recipient_email,
@@ -404,4 +280,3 @@ export async function sendDueScheduleReminders() {
     tenants.map((tenant) => sendDueScheduleRemindersForTenant(tenant)),
   );
 }
-

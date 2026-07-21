@@ -1,21 +1,18 @@
 import type { PoolClient } from "pg";
 import { pool } from "../../shared/db/pool";
+import type {
+  AuditActor,
+  AuditEvent,
+  ListAuditEventsInput,
+  RecordAuditEventInput,
+} from "./audit.types";
 
-export type AuditActor =
-  | {
-      type: "manager";
-      userId: string;
-      displayName?: string;
-    }
-  | {
-      type: "member";
-      personId: string;
-      displayName?: string;
-    }
-  | {
-      type: "system";
-      displayName?: string;
-    };
+export type {
+  AuditActor,
+  AuditEvent,
+  ListAuditEventsInput,
+  RecordAuditEventInput,
+} from "./audit.types";
 
 export const systemAuditActor: AuditActor = { type: "system" };
 
@@ -36,22 +33,6 @@ export const auditActions = {
   seriesUpdated: "schedule_series.updated",
 } as const;
 
-export type RecordAuditEventInput = {
-  actor?: AuditActor;
-  action: (typeof auditActions)[keyof typeof auditActions];
-  entityType: "schedule" | "schedule_series";
-  entityId: string;
-  context?: Record<string, unknown>;
-};
-
-export type ListAuditEventsInput = {
-  action?: string;
-  entityType?: string;
-  entityId?: string;
-  before?: string;
-  limit: number;
-};
-
 type AuditEventRow = {
   id: string;
   actor_type: AuditActor["type"];
@@ -63,22 +44,6 @@ type AuditEventRow = {
   entity_id: string | null;
   context: Record<string, unknown>;
   created_at: Date;
-};
-
-export type AuditEvent = {
-  id: string;
-  actor: {
-    type: AuditActor["type"];
-    id: string | null;
-    displayName: string;
-  };
-  action: string;
-  entity: {
-    type: string;
-    id: string | null;
-  };
-  context: Record<string, unknown>;
-  createdAt: string;
 };
 
 export async function recordAuditEvent(
@@ -202,4 +167,3 @@ export async function listAuditEvents(
     }),
   );
 }
-

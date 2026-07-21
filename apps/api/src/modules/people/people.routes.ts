@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { createLocation, listLocations } from "./location-repository";
+import { createPerson, listPeople } from "./people.repository";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
-import { createLocationSchema, tenantParamsSchema } from "./locations.schemas";
+import { createPersonSchema, tenantParamsSchema } from "./people.schemas";
 
-export async function locationRoutes(app: FastifyInstance) {
-  app.get("/tenants/:tenantSlug/locations", async (request, reply) => {
+export async function peopleRoutes(app: FastifyInstance) {
+  app.get("/tenants/:tenantSlug/people", async (request, reply) => {
     const params = tenantParamsSchema.parse(request.params);
     const context = await resolveTenantContext(params.tenantSlug, reply);
     if (!context) {
@@ -12,23 +12,22 @@ export async function locationRoutes(app: FastifyInstance) {
     }
 
     return {
-      data: await listLocations(context.schema),
+      data: await listPeople(context.schema),
     };
   });
 
-  app.post("/tenants/:tenantSlug/locations", async (request, reply) => {
+  app.post("/tenants/:tenantSlug/people", async (request, reply) => {
     const params = tenantParamsSchema.parse(request.params);
     const context = await resolveTenantContext(params.tenantSlug, reply);
     if (!context) {
       return;
     }
 
-    const input = createLocationSchema.parse(request.body);
-    const location = await createLocation(context.schema, input);
+    const input = createPersonSchema.parse(request.body);
+    const person = await createPerson(context.schema, input);
 
     return reply.code(201).send({
-      data: location,
+      data: person,
     });
   });
 }
-

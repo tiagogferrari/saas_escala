@@ -4,7 +4,7 @@ import {
   createMemberAccessToken,
   MemberAccessError,
   validateMemberAccessToken,
-} from "./member-access-repository";
+} from "./member-access.repository";
 import {
   MemberScheduleError,
   respondToMemberScheduleAssignment,
@@ -210,4 +210,3 @@ export async function memberAccessRoutes(app: FastifyInstance) {
     },
   );
 }
-

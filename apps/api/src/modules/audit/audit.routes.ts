@@ -1,10 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
-import { listAuditEvents } from "./audit-repository";
-import {
-  auditEventsQuerySchema,
-  tenantParamsSchema,
-} from "./audit.schemas";
+import { listAuditEvents } from "./audit.repository";
+import { auditEventsQuerySchema, tenantParamsSchema } from "./audit.schemas";
 
 export async function auditRoutes(app: FastifyInstance) {
   app.get("/tenants/:tenantSlug/audit-events", async (request, reply) => {
@@ -20,4 +17,3 @@ export async function auditRoutes(app: FastifyInstance) {
     };
   });
 }
-

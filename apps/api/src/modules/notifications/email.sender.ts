@@ -47,4 +47,3 @@ export async function sendEmail(message: EmailMessage) {
     html: message.html,
   });
 }
-

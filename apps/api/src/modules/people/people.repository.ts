@@ -1,19 +1,7 @@
 import { pool } from "../../shared/db/pool";
+import type { CreatePersonInput, Person } from "./people.types";
 
-export type Person = {
-  id: string;
-  displayName: string;
-  email: string | null;
-  phone: string | null;
-  status: string;
-  createdAt: string;
-};
-
-export type CreatePersonInput = {
-  displayName: string;
-  email?: string | null;
-  phone?: string | null;
-};
+export type { CreatePersonInput, Person } from "./people.types";
 
 type PersonRow = {
   id: string;
@@ -60,4 +48,3 @@ export async function listPeople(schema: string) {
 
   return result.rows.map(mapPerson);
 }
-

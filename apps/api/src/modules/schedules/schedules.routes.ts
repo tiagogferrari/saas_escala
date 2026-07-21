@@ -1,11 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { AuditActor } from "../audit/audit-repository";
+import type { AuditActor } from "../audit/audit.repository";
 import { resolveTenantContext } from "../../shared/tenant-context/tenant-context";
 import {
   NotificationError,
   resendScheduleInvitation,
   sendScheduleInvitations,
-} from "../notifications/notification-service";
+} from "../notifications/notifications.service";
 import {
   createScheduleAssignment,
   respondToMemberScheduleAssignment,
@@ -848,4 +848,3 @@ export async function scheduleRoutes(app: FastifyInstance) {
     },
   );
 }
-

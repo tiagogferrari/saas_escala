@@ -1,26 +1,14 @@
 import type { PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
-import { createTenantSchemaName, quoteIdentifier } from "../../shared/db/identifiers";
+import {
+  createTenantSchemaName,
+  quoteIdentifier,
+} from "../../shared/db/identifiers";
 import { pool } from "../../shared/db/pool";
 import { tenantSchemaSql } from "../../shared/db/sql/tenant-template";
+import type { CreateTenantInput, Tenant } from "./tenants.types";
 
-export type Tenant = {
-  id: string;
-  slug: string;
-  displayName: string;
-  schemaName: string;
-  timezone: string;
-  locale: string;
-  status: string;
-  createdAt: string;
-};
-
-export type CreateTenantInput = {
-  slug: string;
-  displayName: string;
-  timezone: string;
-  locale: string;
-};
+export type { CreateTenantInput, Tenant } from "./tenants.types";
 
 type TenantRow = {
   id: string;
@@ -163,4 +151,3 @@ export async function getTenantBySlug(slug: string) {
   const tenant = result.rows[0];
   return tenant ? mapTenant(tenant) : null;
 }
-

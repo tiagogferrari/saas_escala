@@ -1,6 +1,9 @@
 import type { FastifyReply } from "fastify";
 import { quoteIdentifier } from "../db/identifiers";
-import { getTenantBySlug, type Tenant } from "../../modules/tenants/tenant-repository";
+import {
+  getTenantBySlug,
+  type Tenant,
+} from "../../modules/tenants/tenants.repository";
 
 export type TenantContext = {
   tenant: Tenant;
@@ -26,4 +29,3 @@ export async function resolveTenantContext(
     schema: quoteIdentifier(tenant.schemaName),
   };
 }
-

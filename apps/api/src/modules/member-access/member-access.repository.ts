@@ -1,21 +1,17 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { PoolClient } from "pg";
 import { pool } from "../../shared/db/pool";
+import type {
+  MemberAccessErrorCode,
+  MemberAccessPerson,
+  MemberAccessToken,
+} from "./member-access.types";
 
-export type MemberAccessPerson = {
-  id: string;
-  displayName: string;
-  email: string | null;
-  phone: string | null;
-  status: string;
-  createdAt: string;
-};
-
-export type MemberAccessToken = {
-  token: string;
-  expiresAt: string;
-  person: MemberAccessPerson;
-};
+export type {
+  MemberAccessErrorCode,
+  MemberAccessPerson,
+  MemberAccessToken,
+} from "./member-access.types";
 
 type MemberAccessPersonRow = {
   id: string;
@@ -25,8 +21,6 @@ type MemberAccessPersonRow = {
   status: string;
   created_at: Date;
 };
-
-type MemberAccessErrorCode = "access_token_invalid" | "person_not_found";
 
 export class MemberAccessError extends Error {
   constructor(
@@ -180,4 +174,3 @@ export async function validateMemberAccessToken(schema: string, token: string) {
     client.release();
   }
 }
-

@@ -19,4 +19,3 @@ export async function checkDatabase() {
   const result = await pool.query<{ ok: number }>("select 1 as ok");
   return result.rows[0]?.ok === 1;
 }
-

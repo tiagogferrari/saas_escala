@@ -3,7 +3,7 @@ import { resolveTenantContext } from "../../shared/tenant-context/tenant-context
 import {
   createScheduleFunction,
   listScheduleFunctions,
-} from "./function-repository";
+} from "./schedule-functions.repository";
 import {
   createFunctionSchema,
   tenantParamsSchema,
@@ -61,4 +61,3 @@ export async function scheduleFunctionRoutes(app: FastifyInstance) {
     }
   });
 }
-

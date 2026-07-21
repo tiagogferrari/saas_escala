@@ -1,19 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { pool } from "../db/pool";
 import { normalizeEmail } from "./passwords";
+import type { AuthenticatedUser, UserCredentials } from "./auth.types";
 
 const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 
-export type AuthenticatedUser = {
-  id: string;
-  displayName: string;
-  email: string;
-};
-
-export type UserCredentials = AuthenticatedUser & {
-  passwordHash: string | null;
-  status: string;
-};
+export type { AuthenticatedUser, UserCredentials } from "./auth.types";
 
 type UserRow = {
   id: string;

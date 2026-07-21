@@ -1,6 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AuthenticatedUser } from "./auth-repository";
-import { getUserBySessionToken, userCanManageTenant } from "./auth-repository";
+import type { AuthenticatedUser } from "./auth.repository";
+import { getUserBySessionToken, userCanManageTenant } from "./auth.repository";
 
 declare module "fastify" {
   interface FastifyRequest {

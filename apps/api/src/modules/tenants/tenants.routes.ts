@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { createTenant, listTenantsForUser } from "./tenant-repository";
+import { createTenant, listTenantsForUser } from "./tenants.repository";
 import { createTenantSchema } from "./tenants.schemas";
 
 export async function tenantRoutes(app: FastifyInstance) {
@@ -39,4 +39,3 @@ export async function tenantRoutes(app: FastifyInstance) {
     }
   });
 }
-
