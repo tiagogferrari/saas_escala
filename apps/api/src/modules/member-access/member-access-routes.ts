@@ -6,11 +6,11 @@ import {
   validateMemberAccessToken,
 } from "./member-access-repository";
 import {
-  createReplacementRequest,
-  listMemberSchedules,
   MemberScheduleError,
   respondToMemberScheduleAssignment,
-} from "../schedules/schedule-repository";
+} from "../schedules/assignments.service";
+import { createReplacementRequest } from "../schedules/replacements.service";
+import { listMemberSchedules } from "../schedules/schedule-query.service";
 import {
   accessAssignmentParamsSchema,
   accessTokenParamsSchema,

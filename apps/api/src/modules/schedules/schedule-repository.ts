@@ -6,256 +6,67 @@ import {
   type AuditActor,
 } from "../audit/audit-repository";
 import { pool } from "../../shared/db/pool";
+import {
+  MemberScheduleError,
+  ReplacementRequestManagerError,
+  ScheduleAssignmentError,
+  ScheduleCancellationError,
+  SchedulePublicationError,
+  ScheduleSeriesError,
+} from "./schedule.errors";
+import type {
+  CancelScheduleInput,
+  CancelScheduleResult,
+  CancelScheduleSeriesInput,
+  CancelScheduleSeriesResult,
+  CreateReplacementRequestInput,
+  CreateScheduleAssignmentInput,
+  CreateScheduleDraftInput,
+  CreateScheduleSeriesInput,
+  MemberSchedule,
+  NotificationDelivery,
+  ReplacementRequest,
+  ScheduleAssignment,
+  ScheduleDraft,
+  ScheduleSeries,
+  ScheduleSeriesOccurrence,
+  ScheduleSeriesOverview,
+  UpdateScheduleSeriesInput,
+  UpdateScheduleSeriesOccurrenceDetailsInput,
+  UpdateScheduleSeriesOccurrenceInput,
+  UpdateScheduleSeriesResult,
+} from "./schedule.types";
 
-export type ScheduleAssignment = {
-  id: string;
-  scheduleSlotId: string;
-  assigneeType: "person" | "group";
-  assigneeId: string;
-  assigneeName: string;
-  status: string;
-  confirmedAt: string | null;
-  confirmationSource: string | null;
-  replacementRequestId: string | null;
-  replacementRequest: ReplacementRequest | null;
-  notification: NotificationDelivery | null;
-  createdAt: string;
-};
-
-export type NotificationDelivery = {
-  kind: string;
-  status: string;
-  sentAt: string | null;
-  recipientEmail: string;
-};
-
-export type ReplacementRequest = {
-  id: string;
-  assignmentId: string;
-  requestedByPersonId: string;
-  status: string;
-  reason: string | null;
-  urgent: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ScheduleDraft = {
-  id: string;
-  seriesId: string | null;
-  occurrenceDate: string | null;
-  title: string;
-  status: string;
-  startsAt: string;
-  endsAt: string;
-  meetingPoint: string | null;
-  instructions: string | null;
-  cancelledReason: string | null;
-  cancelledAt: string | null;
-  location: {
-    id: string;
-    name: string;
-  };
-  slot: {
-    id: string;
-    requiredCount: number;
-    function: {
-      id: string;
-      name: string;
-    };
-  };
-  assignments: ScheduleAssignment[];
-  createdAt: string;
-};
-
-export type ScheduleSeries = {
-  id: string;
-  title: string;
-  recurrenceIntervalWeeks: number;
-  recurrenceEndsOn: string;
-  occurrenceCount: number;
-  skippedOccurrenceCount: number;
-  schedules: ScheduleDraft[];
-  createdAt: string;
-};
-
-export type ScheduleSeriesOccurrence = {
-  occurrenceDate: string;
-  title: string;
-  startsAt: string;
-  endsAt: string;
-  scheduleId: string | null;
-  scheduleStatus: string | null;
-  skipped: boolean;
-  exceptionNote: string | null;
-  cancelledReason: string | null;
-  cancelledAt: string | null;
-  assignmentCount: number;
-  requiredCount: number;
-  meetingPoint: string | null;
-  instructions: string | null;
-  location: {
-    id: string;
-    name: string;
-  };
-  function: {
-    id: string;
-    name: string;
-  };
-};
-
-export type ScheduleSeriesOverview = {
-  id: string;
-  title: string;
-  status: string;
-  recurrenceIntervalWeeks: number;
-  recurrenceEndsOn: string;
-  requiredCount: number;
-  location: {
-    id: string;
-    name: string;
-  };
-  function: {
-    id: string;
-    name: string;
-  };
-  occurrences: ScheduleSeriesOccurrence[];
-  createdAt: string;
-};
-
-export type MemberSchedule = {
-  assignment: ScheduleAssignment;
-  schedule: {
-    id: string;
-    title: string;
-    status: string;
-    startsAt: string;
-    endsAt: string;
-    cancelledReason: string | null;
-    cancelledAt: string | null;
-    location: {
-      id: string;
-      name: string;
-    };
-    slot: {
-      id: string;
-      requiredCount: number;
-      function: {
-        id: string;
-        name: string;
-      };
-    };
-  };
-  companions: ScheduleAssignment[];
-};
-
-export type CreateScheduleDraftInput = {
-  title: string;
-  locationId: string;
-  functionId: string;
-  startsAt: string;
-  endsAt: string;
-  requiredCount: number;
-  meetingPoint?: string | null;
-  instructions?: string | null;
-};
-
-export type CreateScheduleAssignmentInput = {
-  personId: string;
-  status: "invited" | "externally_confirmed";
-};
-
-export type CreateScheduleSeriesInput = {
-  title: string;
-  locationId: string;
-  functionId: string;
-  startsAt: string;
-  endsAt: string;
-  recurrenceIntervalWeeks: number;
-  recurrenceEndsOn: string;
-  requiredCount: number;
-  meetingPoint?: string | null;
-  instructions?: string | null;
-  skippedDates?: string[];
-  skippedOccurrences?: Array<{
-    occurrenceDate: string;
-    note?: string | null;
-  }>;
-  defaultAssignmentPersonIds?: string[];
-  occurrenceAssignmentOverrides?: Array<{
-    occurrenceDate: string;
-    personIds: string[];
-  }>;
-  assignmentStatus: "invited" | "externally_confirmed";
-};
-
-export type UpdateScheduleSeriesOccurrenceInput = {
-  skipped: boolean;
-  note?: string | null;
-};
-
-export type UpdateScheduleSeriesOccurrenceDetailsInput = {
-  title?: string;
-  locationId?: string;
-  functionId?: string;
-  startsAt?: string;
-  endsAt?: string;
-  requiredCount?: number;
-  meetingPoint?: string | null;
-  instructions?: string | null;
-};
-
-export type UpdateScheduleSeriesInput = {
-  title?: string;
-  locationId?: string;
-  functionId?: string;
-  startsAt?: string;
-  endsAt?: string;
-  recurrenceIntervalWeeks?: number;
-  recurrenceEndsOn?: string;
-  requiredCount?: number;
-  meetingPoint?: string | null;
-  instructions?: string | null;
-  applyFrom?: string;
-};
-
-export type UpdateScheduleSeriesResult = {
-  series: ScheduleSeriesOverview;
-  applyFrom: string;
-  createdDraftSchedules: number;
-  updatedDraftSchedules: number;
-  cancelledDraftSchedules: number;
-};
-
-export type CancelScheduleSeriesInput = {
-  cancelFrom: string;
-  note?: string | null;
-};
-
-export type CancelScheduleSeriesResult = {
-  seriesId: string;
-  status: "archived";
-  cancelFrom: string;
-  cancelledSchedules: number;
-  cancelledAssignments: number;
-  cancelledReplacementRequests: number;
-  skippedOccurrences: number;
-};
-
-export type CancelScheduleInput = {
-  reason: string;
-};
-
-export type CancelScheduleResult = {
-  schedule: ScheduleDraft;
-  cancelledAssignments: number;
-  cancelledReplacementRequests: number;
-};
-
-export type CreateReplacementRequestInput = {
-  reason?: string | null;
-  urgent?: boolean;
-};
+export {
+  MemberScheduleError,
+  ReplacementRequestManagerError,
+  ScheduleAssignmentError,
+  ScheduleCancellationError,
+  SchedulePublicationError,
+  ScheduleSeriesError,
+} from "./schedule.errors";
+export type {
+  CancelScheduleInput,
+  CancelScheduleResult,
+  CancelScheduleSeriesInput,
+  CancelScheduleSeriesResult,
+  CreateReplacementRequestInput,
+  CreateScheduleAssignmentInput,
+  CreateScheduleDraftInput,
+  CreateScheduleSeriesInput,
+  MemberSchedule,
+  NotificationDelivery,
+  ReplacementRequest,
+  ScheduleAssignment,
+  ScheduleDraft,
+  ScheduleSeries,
+  ScheduleSeriesOccurrence,
+  ScheduleSeriesOverview,
+  UpdateScheduleSeriesInput,
+  UpdateScheduleSeriesOccurrenceDetailsInput,
+  UpdateScheduleSeriesOccurrenceInput,
+  UpdateScheduleSeriesResult,
+} from "./schedule.types";
 
 type ScheduleDraftRow = {
   schedule_id: string;
@@ -408,104 +219,6 @@ type MemberScheduleRow = {
   replacement_request_created_at: Date | null;
   replacement_request_updated_at: Date | null;
 };
-
-type ScheduleAssignmentErrorCode =
-  | "assignment_already_exists"
-  | "person_not_found"
-  | "person_unavailable"
-  | "schedule_not_assignable"
-  | "schedule_not_found"
-  | "slot_full";
-
-type SchedulePublicationErrorCode = "schedule_not_draft" | "schedule_not_found";
-
-type ScheduleCancellationErrorCode =
-  | "schedule_already_cancelled"
-  | "schedule_not_found"
-  | "schedule_not_published";
-
-type MemberScheduleErrorCode =
-  | "assignment_not_actionable"
-  | "assignment_not_found"
-  | "person_not_found"
-  | "replacement_request_already_exists";
-
-type ReplacementRequestManagerErrorCode =
-  | "assignment_already_exists"
-  | "person_not_found"
-  | "person_unavailable"
-  | "replacement_candidate_not_confirmed"
-  | "replacement_request_not_found"
-  | "replacement_request_not_open"
-  | "schedule_not_assignable";
-
-type ScheduleSeriesErrorCode =
-  | "occurrence_capacity_below_assignments"
-  | "occurrence_function_locked"
-  | "occurrence_not_editable"
-  | "occurrence_not_restorable"
-  | "occurrence_not_skippable"
-  | "person_not_found"
-  | "person_unavailable"
-  | "series_already_archived"
-  | "series_invalid"
-  | "series_not_found"
-  | "series_reference_not_found"
-  | "series_too_large";
-
-export class ScheduleAssignmentError extends Error {
-  constructor(
-    public readonly code: ScheduleAssignmentErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export class SchedulePublicationError extends Error {
-  constructor(
-    public readonly code: SchedulePublicationErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export class ScheduleCancellationError extends Error {
-  constructor(
-    public readonly code: ScheduleCancellationErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export class MemberScheduleError extends Error {
-  constructor(
-    public readonly code: MemberScheduleErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export class ReplacementRequestManagerError extends Error {
-  constructor(
-    public readonly code: ReplacementRequestManagerErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export class ScheduleSeriesError extends Error {
-  constructor(
-    public readonly code: ScheduleSeriesErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 function mapScheduleDraft(row: ScheduleDraftRow): ScheduleDraft {
   return {

@@ -7,30 +7,40 @@ import {
   sendScheduleInvitations,
 } from "../notifications/notification-service";
 import {
+  createScheduleAssignment,
+  respondToMemberScheduleAssignment,
+} from "./assignments.service";
+import {
   cancelSchedule,
   cancelScheduleSeries,
-  completeReplacementRequest,
-  createReplacementRequest,
-  createScheduleAssignment,
+  ScheduleCancellationError,
+} from "./cancellation.service";
+import {
   createScheduleDraft,
-  createScheduleSeries,
-  inviteReplacementCandidate,
+  publishSchedule,
+  SchedulePublicationError,
+} from "./schedule-lifecycle.service";
+import {
   listMemberSchedules,
   listScheduleAssignments,
   listScheduleDrafts,
-  listScheduleSeries,
   MemberScheduleError,
-  publishSchedule,
-  ReplacementRequestManagerError,
-  respondToMemberScheduleAssignment,
   ScheduleAssignmentError,
-  ScheduleCancellationError,
-  SchedulePublicationError,
+} from "./schedule-query.service";
+import {
+  createScheduleSeries,
+  listScheduleSeries,
   ScheduleSeriesError,
   updateScheduleSeries,
   updateScheduleSeriesOccurrenceDetails,
   updateScheduleSeriesOccurrence,
-} from "./schedule-repository";
+} from "./recurrence.service";
+import {
+  completeReplacementRequest,
+  createReplacementRequest,
+  inviteReplacementCandidate,
+  ReplacementRequestManagerError,
+} from "./replacements.service";
 import {
   assignmentInvitationParamsSchema,
   cancelScheduleSchema,
